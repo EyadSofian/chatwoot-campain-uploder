@@ -1,0 +1,1332 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chatwoot Campaign Uploader</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0b0d14;color:#e2e8f0;min-height:100vh;padding:1.5rem 1rem}
+.container{max-width:740px;margin:0 auto}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid #1e2235}
+.logo{width:38px;height:38px;background:#1D9E75;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.header h1{font-size:1.2rem;font-weight:600;color:#fff}
+.header p{font-size:12px;color:#6b7280;margin-top:2px}
+.badge{margin-right:auto;background:#1a2a22;color:#1D9E75;font-size:11px;font-weight:600;padding:4px 10px;border-radius:20px;border:1px solid #1D9E7540}
+.card{background:#13151f;border:1px solid #1e2235;border-radius:14px;padding:1.25rem;margin-bottom:.875rem}
+.card-title{font-size:10px;font-weight:700;color:#4b5563;text-transform:uppercase;letter-spacing:.1em;margin-bottom:1rem;display:flex;align-items:center;gap:6px}
+.card-title::before{content:'';display:inline-block;width:3px;height:12px;background:#1D9E75;border-radius:2px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.field{margin-bottom:.75rem}
+.field:last-child{margin-bottom:0}
+label{display:block;font-size:12px;color:#6b7280;margin-bottom:5px;font-weight:500}
+input{width:100%;background:#0b0d14;border:1px solid #1e2235;border-radius:8px;padding:9px 12px;font-size:13px;color:#e2e8f0;outline:none;transition:border-color .15s,box-shadow .15s}
+input:focus{border-color:#1D9E75;box-shadow:0 0 0 3px #1D9E7520}
+input::placeholder{color:#374151}
+textarea,select{width:100%;background:#0b0d14;border:1px solid #1e2235;border-radius:8px;padding:9px 12px;font-size:13px;color:#e2e8f0;outline:none;transition:border-color .15s,box-shadow .15s;font-family:inherit}
+textarea{min-height:72px;resize:vertical;line-height:1.45;direction:ltr;text-align:left}
+textarea:focus,select:focus{border-color:#1D9E75;box-shadow:0 0 0 3px #1D9E7520}
+select option{background:#0b0d14;color:#e2e8f0}
+.hint{font-size:11px;color:#6b7280;line-height:1.55;margin-top:5px}
+.danger-note{font-size:11px;color:#f59e0b;margin-top:8px;line-height:1.6;background:#2a1f0a;padding:8px 10px;border-radius:6px;border:1px solid #f59e0b30}
+.mini-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:.5rem 0}
+.toggle-row label{font-size:12px;color:#9ca3af;margin:0}
+.toggle{position:relative;width:36px;height:20px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#1e2235;border-radius:20px;cursor:pointer;transition:.2s}
+.slider:before{content:'';position:absolute;width:14px;height:14px;left:3px;top:3px;background:#4b5563;border-radius:50%;transition:.2s}
+.toggle input:checked+.slider{background:#1D9E75}
+.toggle input:checked+.slider:before{transform:translateX(16px);background:#fff}
+.drop{border:1.5px dashed #1e2235;border-radius:10px;padding:1.5rem;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.drop:hover,.drop.over{background:#131a14;border-color:#1D9E75}
+.drop .icon{font-size:24px;margin-bottom:6px}
+.drop p{font-size:13px;color:#6b7280}
+.drop .fname{font-size:12px;font-weight:600;color:#1D9E75;margin-top:6px;background:#1a2a22;padding:4px 10px;border-radius:6px;display:inline-block}
+.drop-clear{position:absolute;top:8px;left:8px;background:#ef444420;color:#ef4444;border:none;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:.875rem}
+.stat{background:#13151f;border:1px solid #1e2235;border-radius:10px;padding:.75rem;text-align:center}
+.stat .n{font-size:20px;font-weight:700;line-height:1}
+.stat .l{font-size:10px;color:#6b7280;margin-top:4px;font-weight:500}
+.n-ok{color:#1D9E75}.n-err{color:#ef4444}.n-warn{color:#f59e0b}.n-blue{color:#3b82f6}
+.progress{height:3px;background:#1e2235;border-radius:4px;margin-bottom:.875rem;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,#1D9E75,#0F6E56);width:0%;transition:width .4s}
+.btn-row{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:.875rem}
+button.primary{padding:11px 20px;border-radius:8px;border:none;background:#1D9E75;color:#fff;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+button.primary:hover{background:#0F6E56;transform:translateY(-1px)}
+button.primary:disabled{opacity:.4;cursor:not-allowed;transform:none}
+button.secondary{padding:11px 16px;border-radius:8px;border:1px solid #1e2235;background:transparent;color:#6b7280;font-size:13px;cursor:pointer;transition:all .15s;white-space:nowrap}
+button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
+.log-wrap{border:1px solid #1e2235;border-radius:10px;overflow:hidden}
+.log-header{background:#13151f;padding:.5rem .75rem;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e2235}
+.log-header span{font-size:11px;color:#6b7280;font-weight:600}
+.log-clear{background:none;border:none;color:#4b5563;font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px}
+.log-clear:hover{color:#9ca3af}
+.log{max-height:220px;overflow-y:auto;font-size:11.5px;font-family:monospace;background:#0b0d14;padding:.75rem}
+.log-item{padding:2.5px 0;border-bottom:1px solid #0f1117;direction:ltr;text-align:left;line-height:1.5}
+.ok{color:#1D9E75}.err{color:#ef4444}.inf{color:#4b5563}.warn{color:#f59e0b}
+.test-btn{font-size:11px;color:#1D9E75;background:none;border:none;cursor:pointer;text-decoration:underline;padding:0;margin-top:4px}
+.test-result{font-size:11px;margin-top:4px;padding:4px 8px;border-radius:6px;display:none}
+.test-result.ok{background:#1a2a22;color:#1D9E75;display:block}
+.test-result.err{background:#2a1a1a;color:#ef4444;display:block}
+@media(max-width:520px){.row,.row3,.mini-grid,.stats{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.btn-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div class="logo">📤</div>
+    <div>
+      <h1>Chatwoot Campaign Uploader</h1>
+      <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
+    </div>
+    <div class="badge">v1.8 Synced Sender</div>
+  </div>
+
+  <!-- Connection Settings -->
+  <div class="card">
+    <div class="card-title">إعدادات الاتصال</div>
+    <div class="row3">
+      <div class="field">
+        <label>API Token</label>
+        <input id="apiToken" type="password" placeholder="API Access Token">
+      </div>
+      <div class="field">
+        <label>Account ID</label>
+        <input id="accId" value="2" placeholder="2">
+      </div>
+    </div>
+    <button class="test-btn" onclick="testConnection()">← اختبر الاتصال</button>
+    <div class="test-result" id="testResult"></div>
+  </div>
+
+  <!-- Campaign Settings -->
+  <div class="card">
+    <div class="card-title">إعدادات الـ Campaign</div>
+    <div class="row">
+      <div class="field">
+        <label>اسم الـ Label (Audience)</label>
+        <input id="labelName" placeholder="مثلاً: sabrein_may_2026">
+      </div>
+      <div class="field">
+        <label>عمود الـ Custom Attribute</label>
+        <input id="attrCol" placeholder="مثلاً: test_eyadsofian">
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label>إنشاء Contact جديد لو مش موجود</label>
+      <label class="toggle">
+        <input type="checkbox" id="createNew" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label>تحديث Custom Attribute للموجودين</label>
+      <label class="toggle">
+        <input type="checkbox" id="updateExisting" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label title="لو مفعّل، هيعمل PATCH دايماً حتى لو القيمة موجودة بالفعل (أبطأ بس مضمون)">
+        وضع التأكيد <span style="opacity:.6;font-size:.85em">— PATCH دايماً (أبطأ)</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="forceUpdate">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- CSV Upload -->
+  <div class="card">
+    <div class="card-title">ملف الـ CSV</div>
+    <div class="drop" id="drop" onclick="document.getElementById('fileIn').click()">
+      <div class="icon">📄</div>
+      <p>اضغط لاختيار ملف CSV أو اسحبه هنا</p>
+      <p style="font-size:11px;color:#374151;margin-top:4px">الأعمدة المطلوبة: name, phone_number, [custom_attribute]</p>
+      <div class="fname" id="fileName" style="display:none"></div>
+      <button class="drop-clear" id="clearBtn" style="display:none" onclick="clearFile(event)">✕ مسح</button>
+    </div>
+    <input type="file" id="fileIn" accept=".csv" style="display:none" onchange="handleFile(this)">
+  </div>
+
+  <!-- API Template Sender -->
+  <div class="card">
+    <div class="card-title">إرسال Campaign من Chatwoot API</div>
+    <div class="danger-note">
+      الوضع الآمن مفعل افتراضياً: Dry Run لا يرسل أي رسالة، و Test Mode يجهز أول رقمين فقط. استخدم الإرسال الحقيقي بعد تجربة رقمين بنجاح.
+    </div>
+    <div class="field" style="margin-top:.75rem">
+      <label>WhatsApp Inbox من Chatwoot</label>
+      <select id="inboxSelect" onchange="selectSyncedInbox()">
+        <option value="">اضغط Sync Inboxes أولاً</option>
+      </select>
+      <div class="hint">بيجيب WhatsApp inboxes الموجودة فعلاً في Chatwoot ويختار الـ Inbox ID تلقائياً.</div>
+    </div>
+    <div class="btn-row">
+      <button class="secondary" onclick="syncInboxes()" type="button">Sync Inboxes</button>
+      <button class="secondary" onclick="loadInboxTemplates(true)" type="button">Sync Templates من Meta</button>
+    </div>
+    <div class="field">
+      <label>Template من Chatwoot</label>
+      <select id="templateSelect" onchange="selectSyncedTemplate()">
+        <option value="">اختار Inbox الأول</option>
+      </select>
+      <div class="hint">بعد اختيار التيمبلت، الأبب يملأ الاسم واللغة والتصنيف ويقترح المتغيرات تلقائياً.</div>
+    </div>
+    <div class="mini-grid" style="margin-top:.75rem">
+      <div class="field">
+        <label>WhatsApp Inbox ID</label>
+        <input id="sendInboxId" placeholder="مثلاً: 42">
+      </div>
+      <div class="field">
+        <label>Template Name</label>
+        <input id="templateName" placeholder="approved_template_name">
+      </div>
+      <div class="field">
+        <label>Language</label>
+        <input id="templateLang" value="ar" placeholder="ar أو ar_EG أو en">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Category</label>
+        <select id="templateCategory">
+          <option value="MARKETING">MARKETING</option>
+          <option value="UTILITY">UTILITY</option>
+          <option value="AUTHENTICATION">AUTHENTICATION</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Source ID Mode</label>
+        <select id="sourceMode">
+          <option value="phone_no_plus">رقم الهاتف بدون +</option>
+          <option value="phone_with_plus">رقم الهاتف مع +</option>
+          <option value="column">عمود من CSV</option>
+        </select>
+      </div>
+    </div>
+    <div class="field" id="sourceColumnWrap" style="display:none">
+      <label>Source ID Column</label>
+      <input id="sourceColumn" placeholder="مثلاً: source_id">
+    </div>
+    <div class="field">
+      <label>Body Variables Mapping</label>
+      <textarea id="bodyParams" placeholder="1=name&#10;2=course_name"></textarea>
+      <div class="hint">كل سطر بصيغة رقم المتغير = اسم عمود في CSV. لو الاسم مش موجود كعمود هيتعامل كنص ثابت.</div>
+    </div>
+    <div class="field">
+      <label>Message Preview / Content</label>
+      <textarea id="messageContent" placeholder="أهلاً {{1}}، عندنا عرض على {{2}}"></textarea>
+      <div class="hint">ده النص اللي هيظهر داخل Chatwoot. المتغيرات هتتبدل حسب الـ mapping.</div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Header Media URL اختياري</label>
+        <input id="headerMediaUrl" placeholder="https://example.com/image.jpg">
+      </div>
+      <div class="field">
+        <label>Header Media Type</label>
+        <select id="headerMediaType">
+          <option value="">بدون</option>
+          <option value="image">image</option>
+          <option value="video">video</option>
+          <option value="document">document</option>
+        </select>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label>Dry Run — معاينة فقط بدون أي إنشاء أو إرسال</label>
+      <label class="toggle">
+        <input type="checkbox" id="dryRun" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label>Test Mode — أول رقمين فقط</label>
+      <label class="toggle">
+        <input type="checkbox" id="testMode" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label>منع تكرار نفس الـ Label + Template لنفس المحادثة</label>
+      <label class="toggle">
+        <input type="checkbox" id="duplicateGuard" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="toggle-row">
+      <label>أؤكد الإرسال الحقيقي للعملاء</label>
+      <label class="toggle">
+        <input type="checkbox" id="sendConfirm">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <button class="primary" id="sendApiBtn" onclick="sendApiCampaign()" style="width:100%;margin-top:.5rem">
+      إرسال/اختبار Template عبر Chatwoot API
+    </button>
+  </div>
+
+  <!-- Stats -->
+  <div id="statsWrap" style="display:none">
+    <div class="stats">
+      <div class="stat"><div class="n n-blue" id="sTotal">0</div><div class="l">إجمالي</div></div>
+      <div class="stat"><div class="n n-ok" id="sDone">0</div><div class="l">جديد</div></div>
+      <div class="stat"><div class="n n-warn" id="sUpdated">0</div><div class="l">تحديث</div></div>
+      <div class="stat"><div class="n n-err" id="sFail">0</div><div class="l">فشل</div></div>
+    </div>
+    <div class="progress"><div class="progress-bar" id="progBar"></div></div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="btn-row">
+    <button class="primary" id="runBtn" onclick="runUpload()" disabled>ابدأ الرفع</button>
+    <button class="secondary" onclick="downloadLog()">تحميل Log</button>
+  </div>
+
+  <!-- Re-trigger Automation Card -->
+  <div class="card">
+    <div class="card-title">تشغيل Automation على المحادثات الموجودة</div>
+    <p style="font-size:12px;color:#9ca3af;margin-bottom:.75rem;line-height:1.6">
+      لو في محادثات قديمة موجودة قبل ما تضيف الـ Custom Attribute — الـ Automation بـ Conversation Created مش هتشتغل عليها.
+      الزرار ده بيعمل <b style="color:#1D9E75">Update</b> للمحادثة (مش Reopen) — أنظف وأسرع.
+    </p>
+    <p style="font-size:11px;color:#f59e0b;margin-bottom:.75rem;line-height:1.6;background:#2a1f0a;padding:8px 10px;border-radius:6px;border:1px solid #f59e0b30">
+      ⚠️ مهم: لازم يكون عندك Automation بـ Event = <b>Conversation Updated</b> (مش Created) عشان يشتغل.
+    </p>
+    <button class="secondary" id="retriggerBtn" onclick="retriggerAutomation()" style="width:100%;background:#1a2438;border-color:#3b82f640;color:#3b82f6">
+      🔄 إعادة تفعيل Automation للـ Label
+    </button>
+  </div>
+
+  <!-- Log -->
+  <div class="log-wrap">
+    <div class="log-header">
+      <span>سجل العمليات</span>
+      <button class="log-clear" onclick="clearLog()">مسح</button>
+    </div>
+    <div class="log" id="log">
+      <div class="log-item inf">[ready] جاهز للرفع — ارفع ملف CSV وابدأ</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
+let syncedInboxes = [], syncedTemplates = [];
+
+const $ = id => document.getElementById(id);
+const stat = (id, v) => $(id).textContent = v;
+
+// الـ base URL دايماً نفس السيرفر على Railway — مفيش Proxy خارجي
+function getBase() {
+  return window.location.origin;
+}
+
+function log(msg, t = 'inf') {
+  const time = new Date().toLocaleTimeString('en-GB');
+  const entry = `[${time}] ${msg}`;
+  logEntries.push(entry);
+  const d = $('log');
+  d.innerHTML += `<div class="log-item ${t}">${entry}</div>`;
+  d.scrollTop = d.scrollHeight;
+}
+
+function clearLog() { $('log').innerHTML = ''; logEntries = []; }
+
+function downloadLog() {
+  const blob = new Blob([logEntries.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `chatwoot-log-${Date.now()}.txt`;
+  a.click();
+}
+
+function clearFile(e) {
+  e.stopPropagation();
+  csvData = [];
+  $('fileName').style.display = 'none';
+  $('clearBtn').style.display = 'none';
+  $('fileIn').value = '';
+  $('runBtn').disabled = true;
+  $('statsWrap').style.display = 'none';
+  log('تم مسح الملف');
+}
+
+// ─── CSV ───────────────────────────────────────────────────
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cell = '', inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (ch === '"' && inQuotes && next === '"') {
+      cell += '"';
+      i++;
+    } else if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      row.push(cell);
+      cell = '';
+    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && next === '\n') i++;
+      row.push(cell);
+      if (row.some(v => String(v).trim() !== '')) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+
+  row.push(cell);
+  if (row.some(v => String(v).trim() !== '')) rows.push(row);
+  if (!rows.length) return [];
+
+  const headers = rows[0].map(h => h.trim().replace(/^\uFEFF/, ''));
+  return rows.slice(1).map(values => {
+    const obj = {};
+    headers.forEach((h, i) => obj[h] = (values[i] || '').trim());
+    return obj;
+  }).filter(r => r.phone_number || r.name);
+}
+
+function handleFile(input) {
+  const f = input.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      csvData = parseCSV(e.target.result);
+      $('fileName').textContent = `${f.name} — ${csvData.length} contact`;
+      $('fileName').style.display = 'inline-block';
+      $('clearBtn').style.display = 'block';
+      $('runBtn').disabled = false;
+      stat('sTotal', csvData.length);
+      stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+      $('progBar').style.width = '0%';
+      $('statsWrap').style.display = 'block';
+      log(`قرأت ${csvData.length} contacts من "${f.name}"`, 'ok');
+      log(`الأعمدة: ${Object.keys(csvData[0] || {}).join(', ')}`, 'inf');
+    } catch(err) {
+      log(`خطأ في قراءة الملف: ${err.message}`, 'err');
+    }
+  };
+  reader.readAsText(f, 'UTF-8');
+}
+
+const drop = $('drop');
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove('over');
+  $('fileIn').files = e.dataTransfer.files;
+  handleFile($('fileIn'));
+};
+
+// ─── API — كل الـ requests بتروح على Railway مباشرة ────────
+async function cwFetch(path, method, body, retries = 2) {
+  const url = getBase() + path;
+  const token = $('apiToken').value;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'api_access_token': token },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    // Handle rate limit (429)
+    if (res.status === 429 && attempt < retries) {
+      const wait = 2000 * (attempt + 1); // 2s, 4s
+      log(`  ⏳ Rate limit (429) — انتظار ${wait/1000}s ثم إعادة المحاولة`, 'warn');
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data: json };
+  }
+}
+
+async function testConnection() {
+  const acc = $('accId').value;
+  const el = $('testResult');
+  el.className = 'test-result';
+  el.textContent = 'جاري الاتصال...';
+  el.style.display = 'block';
+  try {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'GET');
+    if (r.ok) {
+      el.className = 'test-result ok';
+      el.textContent = `✓ الاتصال ناجح — ${r.data.payload?.length || 0} Label موجود`;
+    } else {
+      el.className = 'test-result err';
+      el.textContent = `✗ خطأ ${r.status} — تأكد من الـ Token والـ Account ID`;
+    }
+  } catch(e) {
+    el.className = 'test-result err';
+    el.textContent = `✗ Network error: ${e.message}`;
+  }
+}
+
+async function ensureLabel(label) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'GET');
+  if (r.ok && r.data.payload?.find(l => l.title === label)) {
+    log(`Label "${label}" موجود بالفعل`, 'inf'); return true;
+  }
+  const cr = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'POST',
+    { title: label, color: '#1D9E75', show_on_sidebar: true });
+  if (cr.ok) { log(`✓ تم إنشاء Label: ${label}`, 'ok'); return true; }
+  log(`✗ فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
+}
+
+// بينظف الرقم للمقارنة — بيشيل كل حاجة غير الأرقام
+function normPhone(p) {
+  return (p || '').replace(/[^\d]/g, '');
+}
+
+function hasUnsafePhoneFormat(p) {
+  return /e[+-]|\./i.test(String(p || ''));
+}
+
+// بيجيب الـ ID من أي response format يرجعه Chatwoot
+function extractId(data) {
+  return data?.id
+      || data?.payload?.contact?.id
+      || data?.payload?.id
+      || data?.contact?.id
+      || null;
+}
+
+async function findContactByPhone(phone) {
+  const acc  = $('accId').value;
+  const norm = normPhone(phone);
+
+  // جرب الصيغتين: مع + ومن غير +
+  const queries = [phone, norm].filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const q of queries) {
+    const s = await cwFetch(
+      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(q)}&page=1`, 'GET');
+    if (!s.ok) continue;
+    const contacts = s.data.payload || [];
+    // ✅ exact match فقط — مفيش first-result fallback
+    // ده بيمنع الـ false positives لما الـ search بيرجع contacts غير مطابقة
+    const match = contacts.find(c => normPhone(c.phone_number) === norm);
+    if (match) return match;
+  }
+  return null;
+}
+
+async function applyCustomAttr(contactId, attrKey, attrVal, name, existing = null) {
+  const acc = $('accId').value;
+  // ادمج مع القيم القديمة عشان مش نمسح custom attributes تانية
+  const merged = { ...(existing || {}), [attrKey]: attrVal };
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}`, 'PATCH',
+    { custom_attributes: merged });
+  if (r.ok) {
+    log(`  ↳ ✅ PATCH نجح — Attr "${attrKey}" = "${attrVal}"`, 'ok');
+  } else {
+    log(`  ↳ ❌ PATCH فشل لـ ${name} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+  }
+  return r.ok;
+}
+
+async function upsertContact(row, attrKey) {
+  const acc     = $('accId').value;
+  if (hasUnsafePhoneFormat(row.phone_number)) {
+    throw new Error(`رقم الهاتف "${row.phone_number}" بصيغة Excel علمية/غير آمنة. افتح CSV في Notepad وصحح الرقم قبل الرفع.`);
+  }
+  const phone   = row.phone_number?.replace(/\s/g, '');
+  const name    = row.name || phone;
+  const attrVal = attrKey ? row[attrKey] : null;
+  const hasAttr = !!(attrKey && attrVal);
+  const forceUpdate = $('forceUpdate')?.checked || false;
+
+  // 🔍 Debug: log what we're working with
+  if (attrKey) {
+    if (attrVal) {
+      log(`  🔍 Custom Attr: ${attrKey} = "${attrVal}"`, 'inf');
+    } else {
+      log(`  ⚠️ العمود "${attrKey}" مش موجود في الـ CSV. الأعمدة: [${Object.keys(row).join(', ')}]`, 'warn');
+    }
+  } else {
+    log(`  ⚠️ خانة "عمود الـ Custom Attribute" فاضية — مفيش PATCH هيتعمل`, 'warn');
+  }
+
+  // ── 1. ابحث الأول (Search-First) — بيرجع contact + attrs + labels في request واحد ──
+  const contact = await findContactByPhone(phone);
+
+  // ── 2. لو موجود — حدّث (مع smart skip) ──────────────────────
+  if (contact) {
+    const id = contact.id;
+    log(`  ↳ موجود → ID ${id}`, 'inf');
+
+    // Smart Skip للـ PATCH: لو الـ attr نفس القيمة + مفيش "وضع التأكيد" مفعّل → skip
+    if (hasAttr) {
+      const currentVal = contact.custom_attributes?.[attrKey];
+      if (currentVal === attrVal && !forceUpdate) {
+        log(`  ↳ ⚡ Attr "${attrKey}" = "${attrVal}" موجود — تخطي PATCH`, 'inf');
+      } else {
+        if (currentVal && currentVal !== attrVal) {
+          log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
+        }
+        await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
+      }
+    }
+
+    return { id, isNew: false, existingLabels: contact.labels || [] };
+  }
+
+  // ── 3. مش موجود — اعمل create لو الـ option مفعّل ────────────
+  if (!$('createNew').checked) {
+    log(`  ↳ "${phone}" مش موجود ومش هيتنشأ (الـ option مقفولة)`, 'err');
+    return null;
+  }
+
+  log(`  ↳ مش موجود — إنشاء جديد...`, 'inf');
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST',
+    { name, phone_number: phone });
+
+  if (r.ok) {
+    const id = extractId(r.data);
+    if (!id) {
+      log(`  ↳ تم الإنشاء بس مش عارف الـ ID — response: ${JSON.stringify(r.data)}`, 'warn');
+      return null;
+    }
+    if (hasAttr) await applyCustomAttr(id, attrKey, attrVal, name);
+    return { id, isNew: true, existingLabels: [] };
+  }
+
+  // 422 = race condition: contact اتعمل بين الـ search والـ create
+  if (r.status === 422) {
+    const existingId = extractId(r.data);
+    if (existingId) {
+      const existingContact = r.data?.payload?.contact || r.data?.contact || r.data;
+      const existingAttrs = existingContact?.custom_attributes || {};
+      const existingLabels = existingContact?.labels || [];
+      log(`  ↳ موجود (race condition) → ID ${existingId}`, 'inf');
+      if (hasAttr) {
+        const currentVal = existingAttrs[attrKey];
+        if (!(currentVal === attrVal && !forceUpdate)) {
+          await applyCustomAttr(existingId, attrKey, attrVal, name, existingAttrs);
+        }
+      }
+      return { id: existingId, isNew: false, existingLabels };
+    }
+    // 422 بدون ID — fallback تاني للـ search
+    const c = await findContactByPhone(phone);
+    if (c) {
+      if (hasAttr) {
+        const currentVal = c.custom_attributes?.[attrKey];
+        if (!(currentVal === attrVal && !forceUpdate)) {
+          await applyCustomAttr(c.id, attrKey, attrVal, name, c.custom_attributes);
+        }
+      }
+      return { id: c.id, isNew: false, existingLabels: c.labels || [] };
+    }
+  }
+
+  log(`  ↳ فشل إنشاء "${name}" — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+  return null;
+}
+
+async function assignLabel(contactId, label, name, isNew = false, existingLabels = null) {
+  const acc = $('accId').value;
+
+  // ── استخدم الـ labels الممرّرة (من 422 response أو search) — توفير GET request
+  let existing = existingLabels || [];
+
+  // ── fallback: لو مفيش existingLabels ممرّرة وdata مش جديد، اعمل GET ──
+  if (!isNew && existingLabels === null) {
+    const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'GET');
+    if (r.ok && Array.isArray(r.data.payload)) {
+      existing = r.data.payload;
+    } else if (!r.ok) {
+      log(`  ↳ تحذير: فشل جلب Labels الحالية — HTTP ${r.status} (سيتم إضافة الجديدة فقط)`, 'warn');
+    }
+  }
+
+  // ── تحقق إن الـ label مش موجود بالفعل ─────────────────────
+  if (existing.includes(label)) {
+    log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
+    return true;
+  }
+
+  // ── اضف الجديدة بدون ما تمسح الموجودة ─────────────────────
+  const updated = [...existing, label];
+  const cr = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'POST',
+    { labels: updated });
+  if (cr.ok) {
+    log(`  ↳ Labels: [${updated.join(', ')}] ✓`, 'ok');
+  } else {
+    log(`  ↳ فشل إضافة Label لـ ${name} — HTTP ${cr.status}: ${JSON.stringify(cr.data)}`, 'err');
+  }
+  return cr.ok;
+}
+
+// ─── Process single contact ────────────────────────────────
+async function processContact(row, attrCol, labelName) {
+  const name = row.name || row.phone_number;
+  try {
+    const result = await upsertContact(row, attrCol);
+    if (!result) {
+      log(`✗ ${name} — لم يتم العثور عليه ولم يُنشأ`, 'err');
+      return { status: 'fail' };
+    }
+    const labeled = await assignLabel(result.id, labelName, name, result.isNew, result.existingLabels);
+    if (!labeled) {
+      log(`✗ ${name} — فشل إضافة Label`, 'err');
+      return { status: 'fail' };
+    }
+    if (result.isNew) {
+      log(`✓ جديد: ${name} (ID ${result.id})`, 'ok');
+      return { status: 'new' };
+    } else {
+      log(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn');
+      return { status: 'updated' };
+    }
+  } catch(e) {
+    log(`✗ ${name} — ${e.message}`, 'err');
+    return { status: 'fail' };
+  }
+}
+
+// ─── Main Upload (Parallel batches) ────────────────────────
+async function runUpload() {
+  if (!csvData.length) { log('ارفع ملف CSV أولاً', 'err'); return; }
+  const labelName = $('labelName').value.trim();
+  if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
+  const attrCol = $('attrCol').value.trim();
+
+  // ⚙️ إعدادات الـ batching — معدلة للسرعة القصوى
+  const BATCH_SIZE = 12;      // 12 contact في نفس الوقت — آمن لـ Sidekiq
+  const BATCH_DELAY = 0;      // مفيش delay — الـ batches تشتغل continuous
+
+  $('runBtn').disabled = true;
+  done = 0; updated = 0; fail = 0;
+  stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+
+  const startTime = Date.now();
+  log(`─── بدء الرفع (${csvData.length} contact في batches من ${BATCH_SIZE}) ───`, 'inf');
+
+  const labelOk = await ensureLabel(labelName);
+  if (!labelOk) { $('runBtn').disabled = false; return; }
+
+  // قسّم على batches
+  let processed = 0;
+  for (let i = 0; i < csvData.length; i += BATCH_SIZE) {
+    const batch = csvData.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(csvData.length / BATCH_SIZE);
+    log(`──── Batch ${batchNum}/${totalBatches} (${batch.length} contacts) ────`, 'inf');
+
+    // شغّل الـ batch بالكامل في parallel
+    const results = await Promise.all(
+      batch.map(row => processContact(row, attrCol, labelName))
+    );
+
+    // عدّ النتائج
+    for (const r of results) {
+      if (r.status === 'new') done++;
+      else if (r.status === 'updated') updated++;
+      else fail++;
+    }
+    processed += batch.length;
+
+    stat('sDone', done); stat('sUpdated', updated); stat('sFail', fail);
+    $('progBar').style.width = `${Math.round(processed / csvData.length * 100)}%`;
+
+    // delay بين الـ batches (مش بعد آخر batch)
+    if (i + BATCH_SIZE < csvData.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY));
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const allOk = done + updated;
+  log(`─── انتهى في ${elapsed}s — ${allOk} نجح (${done} جديد + ${updated} تحديث), ${fail} فشل ───`,
+    fail === 0 ? 'ok' : 'warn');
+  $('runBtn').disabled = false;
+}
+
+// ─── API Template Campaign Sender ────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const sourceMode = $('sourceMode');
+  if (sourceMode) {
+    sourceMode.addEventListener('change', () => {
+      $('sourceColumnWrap').style.display = sourceMode.value === 'column' ? 'block' : 'none';
+    });
+  }
+});
+
+function safeKey(input) {
+  const raw = String(input || '');
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+  if (cleaned) return cleaned;
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+  return `key_${Math.abs(hash)}`;
+}
+
+function parseParamMap(text) {
+  const params = {};
+  String(text || '').split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) return;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (key && value) params[key] = value;
+  });
+  return params;
+}
+
+function resolveMappedValue(row, token) {
+  const clean = String(token || '').trim();
+  if (!clean) return '';
+  if (Object.prototype.hasOwnProperty.call(row, clean)) return row[clean] || '';
+  const wrapped = clean.match(/^\{\{\s*([^}]+)\s*\}\}$/);
+  if (wrapped && Object.prototype.hasOwnProperty.call(row, wrapped[1])) return row[wrapped[1]] || '';
+  return clean;
+}
+
+function buildBodyParams(row) {
+  const mapping = parseParamMap($('bodyParams').value);
+  const body = {};
+  Object.keys(mapping).forEach(key => {
+    body[key] = resolveMappedValue(row, mapping[key]);
+  });
+  return body;
+}
+
+function renderMessageContent(row) {
+  let content = $('messageContent').value.trim();
+  const body = buildBodyParams(row);
+  Object.keys(body).forEach(key => {
+    content = content.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'), body[key]);
+  });
+  return content || `WhatsApp template: ${$('templateName').value.trim()}`;
+}
+
+function buildSourceId(row) {
+  const mode = $('sourceMode').value;
+  const phone = (row.phone_number || '').replace(/\s/g, '');
+  if (mode === 'phone_with_plus') return phone;
+  if (mode === 'column') {
+    const col = $('sourceColumn').value.trim();
+    return col ? (row[col] || '').trim() : '';
+  }
+  return normPhone(phone);
+}
+
+async function getContactDetails(contactId) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}`, 'GET');
+  return r.ok ? (r.data.payload || r.data) : null;
+}
+
+function getInboxSourceId(contact, inboxId) {
+  const inboxes = contact?.contact_inboxes || [];
+  const match = inboxes.find(item => String(item.inbox?.id) === String(inboxId));
+  return match?.source_id || '';
+}
+
+async function ensureContactInbox(contactId, row, inboxId) {
+  const acc = $('accId').value;
+  let details = await getContactDetails(contactId);
+  let sourceId = getInboxSourceId(details, inboxId);
+  if (sourceId) return sourceId;
+
+  sourceId = buildSourceId(row);
+  if (!sourceId) throw new Error('لا يمكن تحديد source_id. راجع Source ID Mode أو عمود source_id.');
+
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/contacts/${contactId}/contact_inboxes`,
+    'POST',
+    { inbox_id: Number(inboxId), source_id: sourceId }
+  );
+
+  if (r.ok) {
+    log(`  ↳ Contact inbox جاهز للـ inbox ${inboxId} — source_id=${sourceId}`, 'ok');
+    return sourceId;
+  }
+
+  if (r.status === 422) {
+    details = await getContactDetails(contactId);
+    sourceId = getInboxSourceId(details, inboxId);
+    if (sourceId) return sourceId;
+  }
+
+  throw new Error(`فشل إنشاء contact_inbox — HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+}
+
+async function getContactConversations(contactId) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/conversations`, 'GET');
+  if (!r.ok) return [];
+  return r.data.payload || [];
+}
+
+async function getConversationDetails(conversationId) {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/conversations/${conversationId}`, 'GET');
+  return r.ok ? (r.data.payload || r.data) : null;
+}
+
+async function ensureCampaignConversation(contactId, row, inboxId, labelName) {
+  const acc = $('accId').value;
+  const convs = await getContactConversations(contactId);
+  const existing = convs
+    .filter(conv => String(conv.inbox_id) === String(inboxId))
+    .sort((a, b) => (b.last_activity_at || b.updated_at || b.id || 0) - (a.last_activity_at || a.updated_at || a.id || 0))[0];
+
+  if (existing) {
+    log(`  ↳ Conversation موجودة → #${existing.id}`, 'inf');
+    return existing;
+  }
+
+  const sourceId = await ensureContactInbox(contactId, row, inboxId);
+  const r = await cwFetch(`/api/v1/accounts/${acc}/conversations`, 'POST', {
+    source_id: sourceId,
+    inbox_id: Number(inboxId),
+    contact_id: contactId,
+    status: 'open',
+    custom_attributes: {
+      api_campaign_label: labelName,
+      api_campaign_created_at: new Date().toISOString()
+    }
+  });
+
+  if (r.ok) {
+    const conv = r.data.payload || r.data;
+    log(`  ↳ Conversation جديدة → #${conv.id}`, 'ok');
+    return conv;
+  }
+
+  throw new Error(`فشل إنشاء conversation — HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+}
+
+function buildTemplatePayload(row) {
+  const templateName = $('templateName').value.trim();
+  const language = $('templateLang').value.trim() || 'ar';
+  const category = $('templateCategory').value;
+  const body = buildBodyParams(row);
+  const processed = {};
+  if (Object.keys(body).length) processed.body = body;
+
+  const mediaUrl = $('headerMediaUrl').value.trim();
+  const mediaType = $('headerMediaType').value;
+  if (mediaUrl && mediaType) {
+    processed.header = { media_url: mediaUrl, media_type: mediaType };
+  }
+
+  return {
+    content: renderMessageContent(row),
+    message_type: 'outgoing',
+    private: false,
+    content_type: 'text',
+    content_attributes: {},
+    template_params: {
+      name: templateName,
+      category,
+      language,
+      processed_params: processed
+    }
+  };
+}
+
+function isWhatsAppInbox(inbox) {
+  const type = String(inbox.channel_type || inbox.channel || '').toLowerCase();
+  const provider = String(inbox.provider || inbox.medium || '').toLowerCase();
+  return type.includes('whatsapp') || provider.includes('whatsapp') || provider.includes('360dialog');
+}
+
+function templateLabel(template) {
+  const name = template.name || template.template_name || template.element_name || 'unnamed_template';
+  const lang = template.language || template.locale || template.lang || '';
+  const category = template.category || '';
+  return `${name}${lang ? ` (${lang})` : ''}${category ? ` - ${category}` : ''}`;
+}
+
+function normalizeTemplate(template) {
+  return {
+    raw: template,
+    name: template.name || template.template_name || template.element_name || '',
+    language: template.language || template.locale || template.lang || '',
+    category: template.category || template.template_category || 'MARKETING',
+    components: Array.isArray(template.components) ? template.components : []
+  };
+}
+
+function extractTemplateBody(template) {
+  const normalized = normalizeTemplate(template);
+  const bodyComponent = normalized.components.find(c => String(c.type || '').toUpperCase() === 'BODY');
+  return bodyComponent?.text || template.body || template.content || template.text || '';
+}
+
+function extractTemplateVariables(text) {
+  const matches = String(text || '').match(/\{\{\s*[\w.]+\s*\}\}/g) || [];
+  return [...new Set(matches.map(item => item.replace(/[{}]/g, '').trim()))];
+}
+
+function suggestColumnForVariable(variable) {
+  const headers = Object.keys(csvData[0] || {});
+  const lowerVar = String(variable).toLowerCase();
+  const direct = headers.find(h => h.toLowerCase() === lowerVar);
+  if (direct) return direct;
+  if (lowerVar === '1' && headers.includes('name')) return 'name';
+  const byName = headers.find(h => h.toLowerCase().includes(lowerVar));
+  return byName || '';
+}
+
+async function syncInboxes() {
+  const acc = $('accId').value;
+  const select = $('inboxSelect');
+  select.innerHTML = '<option value="">جاري التحميل...</option>';
+
+  const r = await cwFetch(`/api/v1/accounts/${acc}/inboxes`, 'GET');
+  if (!r.ok) {
+    select.innerHTML = '<option value="">فشل جلب الـ inboxes</option>';
+    log(`فشل Sync Inboxes — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+    return;
+  }
+
+  syncedInboxes = (r.data.payload || []).filter(isWhatsAppInbox);
+  if (!syncedInboxes.length) {
+    select.innerHTML = '<option value="">مفيش WhatsApp inboxes</option>';
+    log('مفيش WhatsApp inboxes راجعة من Chatwoot', 'warn');
+    return;
+  }
+
+  select.innerHTML = '<option value="">اختار WhatsApp Inbox</option>' +
+    syncedInboxes.map(inbox => {
+      const phone = inbox.phone_number ? ` - ${inbox.phone_number}` : '';
+      return `<option value="${inbox.id}">${inbox.name || 'WhatsApp'}${phone} (#${inbox.id})</option>`;
+    }).join('');
+
+  if (syncedInboxes.length === 1) {
+    select.value = String(syncedInboxes[0].id);
+    selectSyncedInbox();
+  }
+
+  log(`تم جلب ${syncedInboxes.length} WhatsApp inbox`, 'ok');
+}
+
+function selectSyncedInbox() {
+  const inboxId = $('inboxSelect').value;
+  if (!inboxId) return;
+  $('sendInboxId').value = inboxId;
+  loadInboxTemplates(false);
+}
+
+async function loadInboxTemplates(forceProviderSync = false) {
+  const acc = $('accId').value;
+  const inboxId = $('sendInboxId').value.trim() || $('inboxSelect').value;
+  const select = $('templateSelect');
+  if (!inboxId) {
+    log('اختار WhatsApp Inbox الأول', 'err');
+    return;
+  }
+
+  if (forceProviderSync) {
+    const sr = await cwFetch(`/api/v1/accounts/${acc}/inboxes/${inboxId}/sync_templates`, 'POST', {});
+    if (sr.ok) log('تم طلب Sync Templates من Meta/Provider', 'ok');
+    else log(`Sync Templates رجع HTTP ${sr.status}: ${JSON.stringify(sr.data)} — هنحاول نقرأ الموجود حالياً`, 'warn');
+  }
+
+  select.innerHTML = '<option value="">جاري تحميل التيمبلتات...</option>';
+  const r = await cwFetch(`/api/v1/accounts/${acc}/inboxes/${inboxId}`, 'GET');
+  if (!r.ok) {
+    select.innerHTML = '<option value="">فشل تحميل التيمبلتات</option>';
+    log(`فشل قراءة Inbox #${inboxId} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+    return;
+  }
+
+  const inbox = r.data.payload || r.data;
+  const templates =
+    inbox.message_templates ||
+    inbox.templates ||
+    inbox.channel?.message_templates ||
+    inbox.provider_config?.message_templates ||
+    [];
+
+  syncedTemplates = Array.isArray(templates)
+    ? templates.filter(t => String(t.status || 'APPROVED').toUpperCase() === 'APPROVED')
+    : [];
+
+  if (!syncedTemplates.length) {
+    select.innerHTML = '<option value="">مفيش approved templates ظاهرة</option>';
+    log('مفيش approved templates في رد الـ inbox. لو فيه تيمبلتات في Chatwoot UI ابعتلي response من اللوج/Network.', 'warn');
+    return;
+  }
+
+  select.innerHTML = '<option value="">اختار Template</option>' +
+    syncedTemplates.map((template, index) => `<option value="${index}">${templateLabel(template)}</option>`).join('');
+  log(`تم تحميل ${syncedTemplates.length} template من Inbox #${inboxId}`, 'ok');
+}
+
+function selectSyncedTemplate() {
+  const index = $('templateSelect').value;
+  if (index === '') return;
+  const template = syncedTemplates[Number(index)];
+  if (!template) return;
+
+  const normalized = normalizeTemplate(template);
+  $('templateName').value = normalized.name;
+  $('templateLang').value = normalized.language || $('templateLang').value || 'ar';
+  $('templateCategory').value = normalized.category || 'MARKETING';
+
+  const body = extractTemplateBody(template);
+  if (body) $('messageContent').value = body;
+
+  const variables = extractTemplateVariables(body);
+  if (variables.length) {
+    $('bodyParams').value = variables.map(v => {
+      const suggestion = suggestColumnForVariable(v);
+      return `${v}=${suggestion || ''}`;
+    }).join('\n');
+    log(`التيمبلت محتاج متغيرات: ${variables.join(', ')} — راجع الـ mapping قبل الإرسال`, 'warn');
+  } else {
+    $('bodyParams').value = '';
+    log('التيمبلت المختار مفيهوش body variables ظاهرة', 'inf');
+  }
+}
+
+async function markCampaignSent(conversationId, attrs, campaignKey, labelName, templateName) {
+  const acc = $('accId').value;
+  const merged = {
+    ...(attrs || {}),
+    [campaignKey]: new Date().toISOString(),
+    last_api_campaign_label: labelName,
+    last_api_template: templateName
+  };
+  await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${conversationId}/custom_attributes`,
+    'POST',
+    { custom_attributes: merged }
+  );
+}
+
+async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
+  const acc = $('accId').value;
+  const inboxId = $('sendInboxId').value.trim();
+  const templateName = $('templateName').value.trim();
+  const name = row.name || row.phone_number;
+
+  if (hasUnsafePhoneFormat(row.phone_number)) {
+    throw new Error(`رقم الهاتف "${row.phone_number}" بصيغة Excel غير آمنة`);
+  }
+
+  const result = await upsertContact(row, attrCol);
+  if (!result) throw new Error('لم يتم إنشاء/تحديث contact');
+  await assignLabel(result.id, labelName, name, result.isNew, result.existingLabels);
+
+  const conv = await ensureCampaignConversation(result.id, row, inboxId, labelName);
+  const details = await getConversationDetails(conv.id);
+  const attrs = details?.custom_attributes || conv.custom_attributes || {};
+
+  if ($('duplicateGuard').checked && attrs[campaignKey]) {
+    log(`  ↳ تخطي: نفس الكامبين اتبعت قبل كده على Conv #${conv.id}`, 'warn');
+    return { status: 'skipped' };
+  }
+
+  const payload = buildTemplatePayload(row);
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${conv.id}/messages`,
+    'POST',
+    payload,
+    3
+  );
+
+  if (!r.ok) {
+    throw new Error(`فشل إرسال template — HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+  }
+
+  await markCampaignSent(conv.id, attrs, campaignKey, labelName, templateName);
+  log(`  ↳ Template اتبعت واتسجلت في Conv #${conv.id}`, 'ok');
+  return { status: 'sent' };
+}
+
+async function sendApiCampaign() {
+  if (!csvData.length) { log('ارفع CSV الأول', 'err'); return; }
+
+  const labelName = $('labelName').value.trim();
+  const attrCol = $('attrCol').value.trim();
+  const inboxId = $('sendInboxId').value.trim();
+  const templateName = $('templateName').value.trim();
+  const dryRun = $('dryRun').checked;
+  const testMode = $('testMode').checked;
+
+  if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
+  if (!inboxId) { log('ادخل WhatsApp Inbox ID', 'err'); return; }
+  if (!templateName) { log('ادخل Template Name', 'err'); return; }
+  if (!dryRun && !$('sendConfirm').checked) {
+    log('الإرسال الحقيقي موقوف: فعّل تأكيد الإرسال أو شغّل Dry Run', 'err');
+    return;
+  }
+
+  const rows = testMode ? csvData.slice(0, 2) : csvData;
+  const campaignKey = `api_sent_${safeKey(labelName)}_${safeKey(templateName)}`;
+
+  $('sendApiBtn').disabled = true;
+  log(`─── API Campaign ${dryRun ? 'DRY RUN' : 'LIVE SEND'} — ${rows.length}/${csvData.length} contacts ───`, dryRun ? 'warn' : 'inf');
+  log(`Duplicate key: ${campaignKey}`, 'inf');
+
+  if (dryRun) {
+    rows.forEach((row, i) => {
+      const body = buildBodyParams(row);
+      const content = renderMessageContent(row);
+      log(`DRY #${i + 1}: ${row.name || row.phone_number} → inbox ${inboxId}`, 'warn');
+      log(`  content: ${content}`, 'inf');
+      log(`  body params: ${JSON.stringify(body)}`, 'inf');
+    });
+    log('Dry Run خلص — مفيش أي request إنشاء/إرسال اتنفذ', 'ok');
+    $('sendApiBtn').disabled = false;
+    return;
+  }
+
+  let sent = 0, skipped = 0, errors = 0;
+  const SEND_BATCH = 2;
+  const SEND_DELAY = 1200;
+
+  for (let i = 0; i < rows.length; i += SEND_BATCH) {
+    const batch = rows.slice(i, i + SEND_BATCH);
+    const results = await Promise.all(batch.map(async row => {
+      try {
+        log(`إرسال: ${row.name || row.phone_number}`, 'inf');
+        return await sendTemplateForRow(row, labelName, attrCol, campaignKey);
+      } catch (e) {
+        log(`✗ ${row.name || row.phone_number} — ${e.message}`, 'err');
+        return { status: 'error' };
+      }
+    }));
+
+    results.forEach(r => {
+      if (r.status === 'sent') sent++;
+      else if (r.status === 'skipped') skipped++;
+      else errors++;
+    });
+
+    if (i + SEND_BATCH < rows.length) {
+      await new Promise(r => setTimeout(r, SEND_DELAY));
+    }
+  }
+
+  log(`─── انتهى API Campaign: ${sent} sent, ${skipped} skipped, ${errors} errors ───`, errors ? 'warn' : 'ok');
+  $('sendApiBtn').disabled = false;
+}
+
+// ─── Re-trigger Automation ─────────────────────────────────
+async function retriggerAutomation() {
+  const labelName = $('labelName').value.trim();
+  if (!labelName) { log('ادخل اسم الـ Label أولاً', 'err'); return; }
+
+  const acc = $('accId').value;
+  $('retriggerBtn').disabled = true;
+  log(`─── إعادة تفعيل Automation للـ Label "${labelName}" ───`, 'inf');
+
+  try {
+    // 1. اجلب كل الـ contacts اللي عليهم الـ label عبر contacts/filter
+    log(`جاري جلب الـ contacts من الـ Label...`, 'inf');
+    let allContacts = [];
+    let page = 1;
+    while (true) {
+      const r = await cwFetch(
+        `/api/v1/accounts/${acc}/contacts/filter?page=${page}`,
+        'POST',
+        {
+          payload: [{
+            attribute_key: 'labels',
+            filter_operator: 'equal_to',
+            values: [labelName],
+            query_operator: null
+          }]
+        });
+      if (!r.ok) {
+        log(`فشل جلب contacts الـ Label — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+        break;
+      }
+      const items = r.data.payload || [];
+      if (!items.length) break;
+      allContacts = allContacts.concat(items);
+      if (items.length < 15) break;
+      page++;
+    }
+    log(`تم العثور على ${allContacts.length} contact في الـ Label`, 'ok');
+
+    if (!allContacts.length) {
+      $('retriggerBtn').disabled = false;
+      return;
+    }
+
+    // 2. لكل contact، اجلب الـ conversations وحدّثها (يطلق conversation_updated event)
+    let triggered = 0, skipped = 0, errors = 0;
+    for (let i = 0; i < allContacts.length; i++) {
+      const c = allContacts[i];
+      try {
+        const cr = await cwFetch(
+          `/api/v1/accounts/${acc}/contacts/${c.id}/conversations`, 'GET');
+        if (!cr.ok) { errors++; continue; }
+        const convs = cr.data.payload || [];
+
+        if (!convs.length) {
+          skipped++;
+          log(`  ○ ${c.name}: مفيش conversations`, 'inf');
+          continue;
+        }
+
+        for (const conv of convs) {
+          // اعمل update فاضي للـ conversation عشان يطلق conversation_updated event
+          // هنحدّث الـ priority بنفس قيمتها (أو null لو مفيش) — ده بيطلق الـ event بدون أي تغيير حقيقي
+          const currentPriority = conv.priority || null;
+          const updateRes = await cwFetch(
+            `/api/v1/accounts/${acc}/conversations/${conv.id}`,
+            'PATCH', { priority: currentPriority });
+
+          if (updateRes.ok) {
+            triggered++;
+            log(`  ⚡ ${c.name}: Conv #${conv.id} (${conv.status}) — تم التحديث`, 'ok');
+          } else {
+            // fallback: جرب toggle_priority
+            const togglePri = await cwFetch(
+              `/api/v1/accounts/${acc}/conversations/${conv.id}/toggle_priority`,
+              'POST', { priority: currentPriority });
+            if (togglePri.ok) {
+              triggered++;
+              log(`  ⚡ ${c.name}: Conv #${conv.id} (${conv.status}) — تم التحديث (priority)`, 'ok');
+            } else {
+              errors++;
+              log(`  ✗ ${c.name}: Conv #${conv.id} — HTTP ${updateRes.status}`, 'err');
+            }
+          }
+        }
+      } catch(e) {
+        errors++;
+        log(`خطأ في contact ${c.id}: ${e.message}`, 'err');
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    log(`─── انتهى: ${triggered} محادثة اتفعلت, ${skipped} تخطي, ${errors} خطأ ───`,
+      errors === 0 ? 'ok' : 'warn');
+  } catch(e) {
+    log(`خطأ عام: ${e.message}`, 'err');
+  }
+  $('retriggerBtn').disabled = false;
+}
+</script>
+</body>
+</html>
