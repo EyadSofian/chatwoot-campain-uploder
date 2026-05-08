@@ -82,7 +82,7 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v1.10 Conversation Modes</div>
+    <div class="badge">v1.11 Safe Reuse</div>
   </div>
 
   <!-- Connection Settings -->
@@ -208,14 +208,6 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
           <option value="column">عمود من CSV</option>
         </select>
       </div>
-    </div>
-    <div class="field">
-      <label>Conversation Reuse Mode</label>
-      <select id="conversationMode">
-        <option value="same_inbox">استخدم محادثة موجودة على نفس الـ WhatsApp Inbox فقط (الموصى به)</option>
-        <option value="any_whatsapp">Advanced: استخدم آخر محادثة WhatsApp حتى لو على Inbox مختلف</option>
-      </select>
-      <div class="hint">لو استخدمت Inbox مختلف، الرسالة هتطلع من الـ Inbox/رقم واتساب بتاع المحادثة القديمة، مش بالضرورة من الـ Inbox المختار.</div>
     </div>
     <div class="field" id="sourceColumnWrap" style="display:none">
       <label>Source ID Column</label>
@@ -898,13 +890,6 @@ function getConversationInboxId(conversation) {
       ?? null;
 }
 
-function isWhatsappConversation(conversation) {
-  const inboxId = getConversationInboxId(conversation);
-  const syncedIds = syncedInboxes.map(inbox => String(inbox.id));
-  if (inboxId && syncedIds.includes(String(inboxId))) return true;
-  return isWhatsAppInbox(conversation?.inbox || conversation?.meta?.inbox || {});
-}
-
 function conversationSortTime(conversation) {
   const value = conversation?.last_activity_at || conversation?.updated_at || conversation?.created_at || 0;
   if (typeof value === 'number') return value;
@@ -920,7 +905,6 @@ async function getConversationDetails(conversationId) {
 
 async function ensureCampaignConversation(contactId, row, inboxId, labelName) {
   const acc = $('accId').value;
-  const conversationMode = $('conversationMode')?.value || 'same_inbox';
   const convs = await getContactConversations(contactId);
   const sameInboxConvs = convs
     .filter(conv => String(getConversationInboxId(conv)) === String(inboxId))
@@ -934,19 +918,6 @@ async function ensureCampaignConversation(contactId, row, inboxId, labelName) {
   if (existing) {
     log(`  ↳ استخدام Conversation موجودة → #${existing.id} (${existing.status || 'unknown'})`, 'inf');
     return existing;
-  }
-
-  if (conversationMode === 'any_whatsapp') {
-    const anyWhatsappConvs = convs
-      .filter(isWhatsappConversation)
-      .sort((a, b) => conversationSortTime(b) - conversationSortTime(a));
-    const anyExisting = anyWhatsappConvs[0];
-    if (anyExisting) {
-      const oldInboxId = getConversationInboxId(anyExisting) || 'غير ظاهر';
-      log(`  ↳ Advanced: استخدام Conversation WhatsApp موجودة على Inbox #${oldInboxId} → #${anyExisting.id}`, 'warn');
-      log(`  ↳ تنبيه: الإرسال هيخرج من Inbox #${oldInboxId} وليس بالضرورة Inbox #${inboxId}`, 'warn');
-      return anyExisting;
-    }
   }
 
   if (convs.length && !sameInboxConvs.length) {
