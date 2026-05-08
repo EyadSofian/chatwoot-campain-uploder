@@ -82,7 +82,7 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v1.8 Synced Sender</div>
+    <div class="badge">v1.9 Reuse Conversations</div>
   </div>
 
   <!-- Connection Settings -->
@@ -880,6 +880,23 @@ async function getContactConversations(contactId) {
   return r.data.payload || [];
 }
 
+function getConversationInboxId(conversation) {
+  return conversation?.inbox_id
+      ?? conversation?.inboxId
+      ?? conversation?.inbox?.id
+      ?? conversation?.meta?.inbox_id
+      ?? conversation?.meta?.inbox?.id
+      ?? conversation?.additional_attributes?.inbox_id
+      ?? null;
+}
+
+function conversationSortTime(conversation) {
+  const value = conversation?.last_activity_at || conversation?.updated_at || conversation?.created_at || 0;
+  if (typeof value === 'number') return value;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 async function getConversationDetails(conversationId) {
   const acc = $('accId').value;
   const r = await cwFetch(`/api/v1/accounts/${acc}/conversations/${conversationId}`, 'GET');
@@ -889,13 +906,23 @@ async function getConversationDetails(conversationId) {
 async function ensureCampaignConversation(contactId, row, inboxId, labelName) {
   const acc = $('accId').value;
   const convs = await getContactConversations(contactId);
-  const existing = convs
-    .filter(conv => String(conv.inbox_id) === String(inboxId))
-    .sort((a, b) => (b.last_activity_at || b.updated_at || b.id || 0) - (a.last_activity_at || a.updated_at || a.id || 0))[0];
+  const sameInboxConvs = convs
+    .filter(conv => String(getConversationInboxId(conv)) === String(inboxId))
+    .sort((a, b) => conversationSortTime(b) - conversationSortTime(a));
+  const existing = sameInboxConvs[0];
+
+  if (convs.length) {
+    log(`  ↳ وجد ${convs.length} conversation للـ contact، منها ${sameInboxConvs.length} على Inbox #${inboxId}`, sameInboxConvs.length ? 'inf' : 'warn');
+  }
 
   if (existing) {
-    log(`  ↳ Conversation موجودة → #${existing.id}`, 'inf');
+    log(`  ↳ استخدام Conversation موجودة → #${existing.id} (${existing.status || 'unknown'})`, 'inf');
     return existing;
+  }
+
+  if (convs.length && !sameInboxConvs.length) {
+    const inboxes = [...new Set(convs.map(getConversationInboxId).filter(Boolean))].join(', ');
+    log(`  ↳ توجد محادثات قديمة لكن على inbox مختلف (${inboxes || 'غير ظاهر'}) — سيتم إنشاء محادثة جديدة على Inbox #${inboxId}`, 'warn');
   }
 
   const sourceId = await ensureContactInbox(contactId, row, inboxId);
