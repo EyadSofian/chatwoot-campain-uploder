@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chatwoot Campaign Uploader</title>
+<script>
+(function () {
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem('campaignTheme'); } catch (_) {}
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = savedTheme || (prefersDark ? 'dark' : 'light');
+})();
+</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,-apple-system,sans-serif;background:#0b0d14;color:#e2e8f0;min-height:100vh;padding:1.5rem 1rem}
@@ -71,18 +79,114 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
 .test-result.ok{background:#1a2a22;color:#1D9E75;display:block}
 .test-result.err{background:#2a1a1a;color:#ef4444;display:block}
 @media(max-width:520px){.row,.row3,.mini-grid,.stats{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.btn-row{grid-template-columns:1fr}}
+
+/* Chatwoot-inspired theme layer */
+:root{
+  --bg:#f6f8fb;
+  --surface:#ffffff;
+  --surface-2:#f8fafc;
+  --input:#ffffff;
+  --text:#0f172a;
+  --muted:#64748b;
+  --faint:#94a3b8;
+  --line:#d9e2ec;
+  --line-strong:#b8c7d8;
+  --brand:#1f93ff;
+  --brand-2:#0b74de;
+  --brand-soft:#e8f3ff;
+  --brand-line:#b9ddff;
+  --ok:#16a34a;
+  --ok-soft:#dcfce7;
+  --warn:#b45309;
+  --warn-soft:#fff7ed;
+  --err:#dc2626;
+  --err-soft:#fee2e2;
+  --blue:#2563eb;
+  --log-bg:#f8fafc;
+  --log-item:#e8eef6;
+  --shadow:0 1px 2px rgba(15,23,42,.06),0 8px 24px rgba(15,23,42,.04);
+  color-scheme:light;
+}
+html[data-theme="dark"]{
+  --bg:#0f172a;
+  --surface:#111c2f;
+  --surface-2:#172238;
+  --input:#0b1220;
+  --text:#e5edf7;
+  --muted:#9aa8bb;
+  --faint:#6f7f93;
+  --line:#263449;
+  --line-strong:#3b4f6a;
+  --brand:#1f93ff;
+  --brand-2:#4aa8ff;
+  --brand-soft:#0d2f52;
+  --brand-line:#1c5f95;
+  --ok:#22c55e;
+  --ok-soft:#0f2f22;
+  --warn:#f59e0b;
+  --warn-soft:#2a1f0a;
+  --err:#f87171;
+  --err-soft:#331a1f;
+  --blue:#60a5fa;
+  --log-bg:#0b1220;
+  --log-item:#101827;
+  --shadow:0 1px 2px rgba(0,0,0,.22),0 12px 28px rgba(0,0,0,.16);
+  color-scheme:dark;
+}
+body{background:var(--bg);color:var(--text);transition:background .18s,color .18s}
+.header{border-bottom-color:var(--line)}
+.logo{background:var(--brand);color:#fff;font-size:13px;font-weight:800;box-shadow:var(--shadow)}
+.header h1{color:var(--text);font-weight:700}
+.header p,label,.hint,.toggle-row label,.stat .l,.log-header span,.inline-muted{color:var(--muted)}
+.badge{background:var(--brand-soft);color:var(--brand);border-color:var(--brand-line)}
+.card,.stat,.log-header{background:var(--surface);border-color:var(--line);box-shadow:var(--shadow)}
+.card-title{color:var(--muted)}
+.card-title::before{background:var(--brand)}
+input,textarea,select{background:var(--input);border-color:var(--line);color:var(--text)}
+input:focus,textarea:focus,select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(31,147,255,.16)}
+input::placeholder{color:var(--faint)}
+select option{background:var(--input);color:var(--text)}
+.danger-note,.retrigger-note{color:var(--warn);background:var(--warn-soft);border-color:rgba(180,83,9,.24)}
+.slider{background:var(--surface-2);border:1px solid var(--line)}
+.slider:before{background:var(--faint);top:2px}
+.toggle input:checked+.slider{background:var(--brand);border-color:var(--brand)}
+.drop{border-color:var(--line-strong);background:var(--surface-2)}
+.drop:hover,.drop.over{background:var(--brand-soft);border-color:var(--brand)}
+.drop p{color:var(--muted)}
+.drop .fname{color:var(--brand);background:var(--brand-soft)}
+.drop-clear{background:var(--err-soft);color:var(--err)}
+.n-ok{color:var(--ok)}.n-err{color:var(--err)}.n-warn{color:var(--warn)}.n-blue{color:var(--blue)}
+.progress{background:var(--surface-2)}
+.progress-bar{background:linear-gradient(90deg,var(--brand),var(--brand-2))}
+button.primary{background:var(--brand);font-weight:700}
+button.primary:hover{background:var(--brand-2)}
+button.secondary{background:var(--surface);border-color:var(--line);color:var(--muted)}
+button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
+.log-wrap{border-color:var(--line);box-shadow:var(--shadow)}
+.log{background:var(--log-bg)}
+.log-item{border-bottom-color:var(--log-item)}
+.ok{color:var(--ok)}.err{color:var(--err)}.inf{color:var(--muted)}.warn{color:var(--warn)}
+.test-btn,.inline-brand{color:var(--brand)}
+.test-result.ok{background:var(--ok-soft);color:var(--ok)}
+.test-result.err{background:var(--err-soft);color:var(--err)}
+.retrigger-copy{font-size:12px;color:var(--muted);margin-bottom:.75rem;line-height:1.6}
+.retrigger-note{font-size:11px;margin-bottom:.75rem;line-height:1.6;padding:8px 10px;border-radius:6px;border:1px solid}
+.retrigger-action{width:100%;background:var(--brand-soft)!important;border-color:var(--brand-line)!important;color:var(--brand)!important;font-weight:700}
+.theme-btn{margin-right:0;font-weight:700;min-width:82px}
+@media(max-width:520px){.header{flex-wrap:wrap}.badge{margin-right:0}.theme-btn{flex:1}}
 </style>
 </head>
 <body>
 <div class="container">
 
   <div class="header">
-    <div class="logo">📤</div>
+    <div class="logo">CW</div>
     <div>
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
     <div class="badge">v1.11 Safe Reuse</div>
+    <button class="secondary theme-btn" id="themeBtn" type="button">Dark</button>
   </div>
 
   <!-- Connection Settings -->
@@ -146,7 +250,7 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
     <div class="drop" id="drop" onclick="document.getElementById('fileIn').click()">
       <div class="icon">📄</div>
       <p>اضغط لاختيار ملف CSV أو اسحبه هنا</p>
-      <p style="font-size:11px;color:#374151;margin-top:4px">الأعمدة المطلوبة: name, phone_number, [custom_attribute]</p>
+      <p class="inline-muted" style="font-size:11px;margin-top:4px">الأعمدة المطلوبة: name, phone_number, [custom_attribute]</p>
       <div class="fname" id="fileName" style="display:none"></div>
       <button class="drop-clear" id="clearBtn" style="display:none" onclick="clearFile(event)">✕ مسح</button>
     </div>
@@ -291,14 +395,14 @@ button.secondary:hover{border-color:#4b5563;color:#e2e8f0}
   <!-- Re-trigger Automation Card -->
   <div class="card">
     <div class="card-title">تشغيل Automation على المحادثات الموجودة</div>
-    <p style="font-size:12px;color:#9ca3af;margin-bottom:.75rem;line-height:1.6">
+    <p class="retrigger-copy">
       لو في محادثات قديمة موجودة قبل ما تضيف الـ Custom Attribute — الـ Automation بـ Conversation Created مش هتشتغل عليها.
-      الزرار ده بيعمل <b style="color:#1D9E75">Update</b> للمحادثة (مش Reopen) — أنظف وأسرع.
+      الزرار ده بيعمل <b class="inline-brand">Update</b> للمحادثة (مش Reopen) — أنظف وأسرع.
     </p>
-    <p style="font-size:11px;color:#f59e0b;margin-bottom:.75rem;line-height:1.6;background:#2a1f0a;padding:8px 10px;border-radius:6px;border:1px solid #f59e0b30">
+    <p class="retrigger-note">
       ⚠️ مهم: لازم يكون عندك Automation بـ Event = <b>Conversation Updated</b> (مش Created) عشان يشتغل.
     </p>
-    <button class="secondary" id="retriggerBtn" onclick="retriggerAutomation()" style="width:100%;background:#1a2438;border-color:#3b82f640;color:#3b82f6">
+    <button class="secondary retrigger-action" id="retriggerBtn" onclick="retriggerAutomation()">
       🔄 إعادة تفعيل Automation للـ Label
     </button>
   </div>
@@ -322,6 +426,28 @@ let syncedInboxes = [], syncedTemplates = [];
 
 const $ = id => document.getElementById(id);
 const stat = (id, v) => $(id).textContent = v;
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+function updateThemeButton() {
+  const btn = $('themeBtn');
+  if (!btn) return;
+  btn.textContent = currentTheme() === 'dark' ? 'Light' : 'Dark';
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('campaignTheme', theme); } catch (_) {}
+  updateThemeButton();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  updateThemeButton();
+  const btn = $('themeBtn');
+  if (btn) btn.addEventListener('click', () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark'));
+});
 
 // الـ base URL دايماً نفس السيرفر على Railway — مفيش Proxy خارجي
 function getBase() {
@@ -481,7 +607,7 @@ async function ensureLabel(label) {
     log(`Label "${label}" موجود بالفعل`, 'inf'); return true;
   }
   const cr = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'POST',
-    { title: label, color: '#1D9E75', show_on_sidebar: true });
+    { title: label, color: '#1f93ff', show_on_sidebar: true });
   if (cr.ok) { log(`✓ تم إنشاء Label: ${label}`, 'ok'); return true; }
   log(`✗ فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
 }
