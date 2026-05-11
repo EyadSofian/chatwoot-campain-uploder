@@ -609,7 +609,21 @@ async function ensureLabel(label) {
   const cr = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'POST',
     { title: label, color: '#1f93ff', show_on_sidebar: true });
   if (cr.ok) { log(`✓ تم إنشاء Label: ${label}`, 'ok'); return true; }
+  if (cr.status === 422 && (cr.data?.message || '').toLowerCase().includes('title has already been taken')) {
+    log(`Label "${label}" موجود بالفعل — هنكمل عادي`, 'inf');
+    return true;
+  }
   log(`✗ فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
+}
+
+function validateAttrColumn(attrCol) {
+  if (!attrCol) return true;
+  const headers = Object.keys(csvData[0] || {});
+  if (headers.includes(attrCol)) return true;
+  log(`✗ عمود الـ Custom Attribute "${attrCol}" مش موجود في CSV`, 'err');
+  log(`الأعمدة الموجودة: [${headers.join(', ')}]`, 'warn');
+  log(`اكتب اسم العمود نفسه، مش قيمة الليست. مثال هنا: TestAhmedibrahim`, 'warn');
+  return false;
 }
 
 // بينظف الرقم للمقارنة — بيشيل كل حاجة غير الأرقام
@@ -830,6 +844,7 @@ async function runUpload() {
   const labelName = $('labelName').value.trim();
   if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
   const attrCol = $('attrCol').value.trim();
+  if (!validateAttrColumn(attrCol)) return;
 
   // ⚙️ إعدادات الـ batching — معدلة للسرعة القصوى
   const BATCH_SIZE = 12;      // 12 contact في نفس الوقت — آمن لـ Sidekiq
@@ -1322,6 +1337,7 @@ async function sendApiCampaign() {
   const templateName = $('templateName').value.trim();
   const dryRun = $('dryRun').checked;
   const testMode = $('testMode').checked;
+  if (!validateAttrColumn(attrCol)) return;
 
   if (!labelName) { log('ادخل اسم الـ Label', 'err'); return; }
   if (!inboxId) { log('ادخل WhatsApp Inbox ID', 'err'); return; }
