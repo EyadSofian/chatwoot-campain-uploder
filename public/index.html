@@ -315,8 +315,8 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       <div class="field">
         <label>Source ID Mode</label>
         <select id="sourceMode">
-          <option value="phone_no_plus">رقم الهاتف بدون +</option>
-          <option value="phone_with_plus">رقم الهاتف مع +</option>
+          <option value="phone_no_plus">رقم الهاتف بدون + (الأصح لواتساب)</option>
+          <option value="phone_with_plus">رقم الهاتف مع + (هيتنضف تلقائياً)</option>
           <option value="column">عمود من CSV</option>
         </select>
       </div>
@@ -1059,12 +1059,17 @@ function renderMessageContent(row) {
 function buildSourceId(row) {
   const mode = $('sourceMode').value;
   const phone = (row.phone_number || '').replace(/\s/g, '');
-  if (mode === 'phone_with_plus') return phone;
+  let raw = phone;
   if (mode === 'column') {
     const col = $('sourceColumn').value.trim();
-    return col ? (row[col] || '').trim() : '';
+    raw = col ? (row[col] || '').trim() : '';
   }
-  return normPhone(phone);
+  // WhatsApp contact_inbox source_id in Chatwoot must be digits only, without "+".
+  return normPhone(raw);
+}
+
+function validateWhatsAppSourceId(sourceId) {
+  return /^\d{1,15}$/.test(String(sourceId || ''));
 }
 
 async function getContactDetails(contactId) {
@@ -1087,6 +1092,9 @@ async function ensureContactInbox(contactId, row, inboxId) {
 
   sourceId = buildSourceId(row);
   if (!sourceId) throw new Error('لا يمكن تحديد source_id. راجع Source ID Mode أو عمود source_id.');
+  if (!validateWhatsAppSourceId(sourceId)) {
+    throw new Error(`source_id غير صالح لواتساب: "${sourceId}". لازم يكون أرقام فقط من 1 إلى 15 رقم بدون + أو مسافات.`);
+  }
 
   const r = await cwFetch(
     `/api/v1/accounts/${acc}/contacts/${contactId}/contact_inboxes`,
