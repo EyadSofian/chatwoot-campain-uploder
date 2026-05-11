@@ -359,25 +359,40 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         </label>
       </div>
       <div id="assignPanelBody">
-        <div class="field">
-          <label>طريقة اختيار الموظف</label>
-          <select id="assignMode" onchange="toggleAssignmentPanel()">
-            <option value="by_csv">حسب قيمة الموظف في CSV</option>
-            <option value="fixed_agent">نفس الموظف لكل الحملة</option>
-          </select>
-          <div class="hint">Chatwoot يسمح بموظف واحد مسؤول عن المحادثة. لو عايز أكتر من شخص، استخدم Team في Chatwoot مش أكتر من Agent لنفس المحادثة.</div>
+        <div class="row">
+          <div class="field">
+            <label>نوع التوزيع</label>
+            <select id="assignTargetType" onchange="handleAssignmentTargetTypeChange()">
+              <option value="agent">Agent</option>
+              <option value="team">Team</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>طريقة التوزيع</label>
+            <select id="assignMode" onchange="toggleAssignmentPanel()">
+              <option value="by_csv">حسب قيمة في CSV</option>
+              <option value="fixed_agent">نفس الاختيار لكل الحملة</option>
+            </select>
+          </div>
         </div>
+        <div class="hint">اختيار Agent يعني مسؤول واحد. اختيار Team يعني المحادثة تروح لمجموعة، ولو الـ Team فيه Auto Assign شغال Chatwoot يوزعها على عضو من التيم.</div>
         <div class="field" id="fixedAgentWrap" style="display:none">
-          <label>الموظف المسؤول عن كل الحملة</label>
+          <label id="fixedTargetLabel">المسؤول عن كل الحملة</label>
           <select id="fixedAgentSelect" onchange="updateAgentMapStatus()">
-            <option value="">اعمل Sync Agents الأول</option>
+            <option value="">اعمل Sync الأول</option>
           </select>
+        </div>
+        <div class="field" id="csvTargetColumnWrap">
+          <label>عمود قيمة التوزيع في CSV</label>
+          <input id="assignValueColumn" placeholder="اتركه فاضي لاستخدام عمود الـ Custom Attribute">
+          <div class="hint">اختياري. لو فاضي، الأبب هيستخدم عمود الـ Custom Attribute فوق.</div>
         </div>
         <div class="hint" id="assignHelp">الأبب هيستخدم قيمة عمود الـ Custom Attribute فوق، ويطابقها مع موظف موجود في نفس الـ WhatsApp Inbox.</div>
         <div class="assign-actions">
           <button class="secondary" onclick="syncInboxAgents()" type="button">Sync Agents</button>
-          <button class="secondary" onclick="buildAgentMappingUI()" type="button">تحديث اختيارات التوزيع</button>
+          <button class="secondary" onclick="syncTeams()" type="button">Sync Teams</button>
         </div>
+        <button class="secondary" onclick="buildAgentMappingUI()" type="button" style="width:100%;margin-top:8px">تحديث اختيارات التوزيع</button>
         <div id="agentMapStatus" class="agent-map-status hint">اعمل Sync Agents بعد اختيار الـ Inbox ورفع الـ CSV.</div>
         <div id="agentMap" class="agent-map"></div>
       </div>
@@ -462,7 +477,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 
 <script>
 let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
-let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], agentAssignments = {};
+let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [], agentAssignments = {};
 
 const $ = id => document.getElementById(id);
 const stat = (id, v) => $(id).textContent = v;
@@ -583,7 +598,7 @@ function handleFile(input) {
       $('statsWrap').style.display = 'block';
       log(`قرأت ${csvData.length} contacts من "${f.name}"`, 'ok');
       log(`الأعمدة: ${Object.keys(csvData[0] || {}).join(', ')}`, 'inf');
-      if (syncedAgents.length) buildAgentMappingUI();
+      if (currentAssignmentTargets().length) buildAgentMappingUI();
     } catch(err) {
       log(`خطأ في قراءة الملف: ${err.message}`, 'err');
     }
@@ -692,238 +707,6 @@ function agentName(agent) {
 
 function assignmentMode() {
   return $('assignMode')?.value || 'by_csv';
-}
-
-function renderAgentOptions(selected = '') {
-  return ['<option value="">اختار الموظف</option>']
-    .concat(syncedAgents.map(agent => {
-      const id = String(agent.id);
-      const isSelected = id === String(selected) ? ' selected' : '';
-      return `<option value="${escapeHtml(id)}"${isSelected}>${escapeHtml(agentName(agent))} (#${escapeHtml(id)})</option>`;
-    }))
-    .join('');
-}
-
-function populateFixedAgentSelect() {
-  const select = $('fixedAgentSelect');
-  if (!select) return;
-  const current = select.value;
-  select.innerHTML = syncedAgents.length
-    ? renderAgentOptions(current)
-    : '<option value="">اعمل Sync Agents الأول</option>';
-}
-
-function getAssignmentValues(rows = csvData) {
-  const attrCol = $('attrCol').value.trim();
-  if (!attrCol || !rows.length || !validateAttrColumn(attrCol)) return [];
-  return [...new Set(rows.map(row => String(row[attrCol] || '').trim()).filter(Boolean))];
-}
-
-function findAgentForValue(value) {
-  const wanted = normalizeAgentKey(value);
-  if (!wanted) return null;
-  const exact = syncedAgents.find(agent => {
-    const options = [
-      agentName(agent),
-      agent.name,
-      agent.available_name,
-      agent.email,
-      String(agent.email || '').split('@')[0]
-    ];
-    return options.some(option => normalizeAgentKey(option) === wanted);
-  });
-  if (exact) return exact;
-  return syncedAgents.find(agent => normalizeAgentKey(agentName(agent)).includes(wanted));
-}
-
-function toggleAssignmentPanel() {
-  const body = $('assignPanelBody');
-  const enabled = $('autoAssign').checked;
-  if (body) body.style.display = enabled ? 'block' : 'none';
-  const fixedWrap = $('fixedAgentWrap');
-  const mapWrap = $('agentMap');
-  const help = $('assignHelp');
-  const byCsv = assignmentMode() === 'by_csv';
-  if (fixedWrap) fixedWrap.style.display = enabled && !byCsv ? 'block' : 'none';
-  if (mapWrap) mapWrap.style.display = enabled && byCsv ? 'grid' : 'none';
-  if (help) {
-    help.textContent = byCsv
-      ? 'الأبب هيستخدم قيمة عمود الـ Custom Attribute فوق، ويطابقها مع موظف موجود في نفس الـ WhatsApp Inbox.'
-      : 'كل المحادثات في الحملة دي هتتعيّن لنفس الموظف المختار.';
-  }
-  populateFixedAgentSelect();
-  buildAgentMappingUI();
-}
-
-function updateAgentMapStatus(values = null) {
-  const status = $('agentMapStatus');
-  if (!status) return;
-  if (!$('autoAssign')?.checked) {
-    status.textContent = 'التوزيع التلقائي مقفول.';
-    status.className = 'agent-map-status hint';
-    return;
-  }
-  if (assignmentMode() === 'fixed_agent') {
-    const agent = syncedAgents.find(item => String(item.id) === String($('fixedAgentSelect')?.value || ''));
-    if (agent) {
-      status.textContent = `جاهز: كل الحملة هتتعيّن إلى ${agentName(agent)}.`;
-      status.className = 'agent-map-status ok';
-    } else {
-      status.textContent = 'اختار الموظف المسؤول عن الحملة.';
-      status.className = 'agent-map-status warn';
-    }
-    return;
-  }
-  if (!values) values = getAssignmentValues();
-  if (!values.length) {
-    status.textContent = 'مفيش قيم موظفين واضحة في CSV. اتأكد من اسم عمود الـ Custom Attribute.';
-    status.className = 'agent-map-status warn';
-    return;
-  }
-  const missing = values.filter(value => !agentAssignments[value]);
-  if (missing.length) {
-    status.textContent = `ناقص ربط ${missing.length} قيمة: ${missing.join(', ')}`;
-    status.className = 'agent-map-status warn';
-  } else {
-    status.textContent = `جاهز: ${values.length} قيمة متربطة بموظفين في نفس الـ Inbox.`;
-    status.className = 'agent-map-status ok';
-  }
-}
-
-function buildAgentMappingUI() {
-  const wrap = $('agentMap');
-  if (!wrap) return false;
-  wrap.innerHTML = '';
-  if (!$('autoAssign')?.checked) {
-    updateAgentMapStatus([]);
-    return true;
-  }
-  populateFixedAgentSelect();
-  if (assignmentMode() === 'fixed_agent') {
-    updateAgentMapStatus([]);
-    return !!$('fixedAgentSelect')?.value;
-  }
-  const attrCol = $('attrCol').value.trim();
-  if (!csvData.length) {
-    $('agentMapStatus').textContent = 'ارفع CSV الأول عشان أبني خريطة التوزيع.';
-    $('agentMapStatus').className = 'agent-map-status warn';
-    return false;
-  }
-  if (!attrCol || !validateAttrColumn(attrCol)) return false;
-  if (!syncedAgents.length) {
-    $('agentMapStatus').textContent = 'اعمل Sync Agents بعد اختيار الـ WhatsApp Inbox.';
-    $('agentMapStatus').className = 'agent-map-status warn';
-    return false;
-  }
-  const values = getAssignmentValues();
-  if (!values.length) {
-    updateAgentMapStatus(values);
-    return false;
-  }
-  for (const value of values) {
-    if (!agentAssignments[value]) {
-      const match = findAgentForValue(value);
-      if (match?.id) agentAssignments[value] = String(match.id);
-    }
-  }
-  const options = renderAgentOptions();
-  wrap.innerHTML = values.map(value => `
-    <div class="agent-map-row">
-      <div class="agent-map-value" title="${escapeHtml(value)}">${escapeHtml(value)}</div>
-      <div class="agent-map-arrow">←</div>
-      <select data-agent-value="${escapeHtml(value)}">${options}</select>
-    </div>
-  `).join('');
-  wrap.querySelectorAll('select[data-agent-value]').forEach(select => {
-    const value = select.getAttribute('data-agent-value');
-    select.value = agentAssignments[value] || '';
-    select.addEventListener('change', () => {
-      agentAssignments[value] = select.value;
-      updateAgentMapStatus(values);
-    });
-  });
-  updateAgentMapStatus(values);
-  return values.every(value => agentAssignments[value]);
-}
-
-async function syncInboxAgents() {
-  const acc = $('accId').value;
-  const inboxId = $('sendInboxId').value.trim() || $('inboxSelect').value;
-  if (!inboxId) {
-    log('اختار WhatsApp Inbox الأول قبل Sync Agents', 'err');
-    return false;
-  }
-  const r = await cwFetch(`/api/v1/accounts/${acc}/inbox_members/${inboxId}`, 'GET');
-  if (!r.ok) {
-    log(`فشل Sync Agents — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
-    return false;
-  }
-  syncedAgents = r.data.payload || r.data || [];
-  if (!Array.isArray(syncedAgents)) syncedAgents = [];
-  agentAssignments = {};
-  log(`تم جلب ${syncedAgents.length} agent من Inbox #${inboxId}`, syncedAgents.length ? 'ok' : 'warn');
-  buildAgentMappingUI();
-  return !!syncedAgents.length;
-}
-
-async function prepareAssignmentMap(rows) {
-  if (!$('autoAssign')?.checked) return true;
-  if (!syncedAgents.length) {
-    const ok = await syncInboxAgents();
-    if (!ok) return false;
-  } else {
-    buildAgentMappingUI();
-  }
-  if (assignmentMode() === 'fixed_agent') {
-    const agentId = $('fixedAgentSelect')?.value;
-    if (!agentId) {
-      log('✗ لا يمكن الإرسال: اختار الموظف المسؤول عن الحملة', 'err');
-      return false;
-    }
-    return true;
-  }
-  if (!validateAttrColumn($('attrCol').value.trim())) return false;
-  const values = getAssignmentValues(rows);
-  const missing = values.filter(value => !agentAssignments[value]);
-  if (missing.length) {
-    log(`✗ لا يمكن الإرسال: قيم موظفين غير مربوطة: ${missing.join(', ')}`, 'err');
-    log('اختار الموظف لكل قيمة من خريطة التوزيع ثم جرّب تاني', 'warn');
-    return false;
-  }
-  return true;
-}
-
-function mappedAgentForRow(row, attrCol) {
-  if (assignmentMode() === 'fixed_agent') {
-    const agentId = $('fixedAgentSelect')?.value;
-    if (!agentId) return null;
-    return syncedAgents.find(agent => String(agent.id) === String(agentId)) || { id: agentId, name: `Agent #${agentId}` };
-  }
-  const value = String(row[attrCol] || '').trim();
-  const agentId = agentAssignments[value];
-  if (!agentId) return null;
-  return syncedAgents.find(agent => String(agent.id) === String(agentId)) || { id: agentId, name: `Agent #${agentId}` };
-}
-
-async function assignConversationToCsvAgent(conversationId, row, attrCol) {
-  if (!$('autoAssign')?.checked) return true;
-  const acc = $('accId').value;
-  const agent = mappedAgentForRow(row, attrCol);
-  if (!agent?.id) {
-    log(`  ↳ ⚠️ مفيش موظف مربوط لقيمة "${row[attrCol] || ''}"`, 'warn');
-    return false;
-  }
-  const r = await cwFetch(
-    `/api/v1/accounts/${acc}/conversations/${conversationId}/assignments`,
-    'POST',
-    { assignee_id: Number(agent.id) }
-  );
-  if (r.ok) {
-    log(`  ↳ تم Assign للمحادثة → ${agentName(agent)}`, 'ok');
-    return true;
-  }
-  log(`  ↳ ⚠️ فشل Assign للمحادثة — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'warn');
-  return false;
 }
 
 // بينظف الرقم للمقارنة — بيشيل كل حاجة غير الأرقام
@@ -1208,7 +991,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const attrInput = $('attrCol');
   if (attrInput) attrInput.addEventListener('input', () => {
     agentAssignments = {};
-    if (syncedAgents.length && csvData.length) buildAgentMappingUI();
+    if (currentAssignmentTargets().length && csvData.length) buildAgentMappingUI();
+  });
+  const assignValueInput = $('assignValueColumn');
+  if (assignValueInput) assignValueInput.addEventListener('input', () => {
+    agentAssignments = {};
+    if (currentAssignmentTargets().length && csvData.length) buildAgentMappingUI();
   });
   toggleAssignmentPanel();
 });
@@ -1677,7 +1465,7 @@ async function sendApiCampaign() {
       log(`DRY #${i + 1}: ${row.name || row.phone_number} → inbox ${inboxId}`, 'warn');
       log(`  content: ${content}`, 'inf');
       log(`  body params: ${JSON.stringify(body)}`, 'inf');
-      if ($('autoAssign')?.checked) log(`  assign: ${agent ? agentName(agent) : 'غير محدد'}`, agent ? 'inf' : 'warn');
+      if ($('autoAssign')?.checked) log(`  assign ${assignmentTargetLabel()}: ${agent ? assignmentTargetName(agent) : 'غير محدد'}`, agent ? 'inf' : 'warn');
     });
     log('Dry Run خلص — مفيش أي request إنشاء/إرسال اتنفذ', 'ok');
     $('sendApiBtn').disabled = false;
@@ -1812,6 +1600,324 @@ async function retriggerAutomation() {
     log(`خطأ عام: ${e.message}`, 'err');
   }
   $('retriggerBtn').disabled = false;
+}
+
+// ─── Assignment v2: Agent/Team targets + CSV routing ─────────────────────
+function assignmentTargetType() {
+  return $('assignTargetType')?.value || 'agent';
+}
+
+function assignmentTargetLabel() {
+  return assignmentTargetType() === 'team' ? 'Team' : 'Agent';
+}
+
+function currentAssignmentTargets() {
+  return assignmentTargetType() === 'team' ? syncedTeams : syncedAgents;
+}
+
+function assignmentTargetName(target) {
+  if (!target) return '';
+  return target.available_name
+      || target.name
+      || target.email
+      || target.description
+      || `${assignmentTargetLabel()} #${target.id || '-'}`;
+}
+
+function assignmentValueColumn() {
+  return $('assignValueColumn')?.value.trim() || $('attrCol')?.value.trim() || '';
+}
+
+function validateCsvColumn(column, label = 'العمود') {
+  if (!column) return true;
+  const headers = Object.keys(csvData[0] || {});
+  if (headers.includes(column)) return true;
+  log(`✗ ${label} "${column}" مش موجود في CSV`, 'err');
+  log(`الأعمدة الموجودة: [${headers.join(', ')}]`, 'warn');
+  return false;
+}
+
+function renderAgentOptions(selected = '') {
+  const label = assignmentTargetType() === 'team' ? 'التيم' : 'الموظف';
+  const targets = currentAssignmentTargets();
+  return [`<option value="">اختار ${label}</option>`]
+    .concat(targets.map(target => {
+      const id = String(target.id);
+      const isSelected = id === String(selected) ? ' selected' : '';
+      return `<option value="${escapeHtml(id)}"${isSelected}>${escapeHtml(assignmentTargetName(target))} (#${escapeHtml(id)})</option>`;
+    }))
+    .join('');
+}
+
+function populateFixedAgentSelect() {
+  const select = $('fixedAgentSelect');
+  if (!select) return;
+  const current = select.value;
+  const targets = currentAssignmentTargets();
+  select.innerHTML = targets.length
+    ? renderAgentOptions(current)
+    : `<option value="">اعمل Sync ${assignmentTargetLabel()} الأول</option>`;
+}
+
+function getAssignmentValues(rows = csvData) {
+  const column = assignmentValueColumn();
+  if (!column || !rows.length || !validateCsvColumn(column, 'عمود التوزيع')) return [];
+  return [...new Set(rows.map(row => String(row[column] || '').trim()).filter(Boolean))];
+}
+
+function findTargetForValue(value) {
+  const wanted = normalizeAgentKey(value);
+  if (!wanted) return null;
+  const exact = currentAssignmentTargets().find(target => {
+    const options = [
+      assignmentTargetName(target),
+      target.name,
+      target.available_name,
+      target.email,
+      target.description,
+      String(target.email || '').split('@')[0]
+    ];
+    return options.some(option => normalizeAgentKey(option) === wanted);
+  });
+  if (exact) return exact;
+  return currentAssignmentTargets().find(target => normalizeAgentKey(assignmentTargetName(target)).includes(wanted));
+}
+
+function handleAssignmentTargetTypeChange() {
+  agentAssignments = {};
+  const map = $('agentMap');
+  if (map) map.innerHTML = '';
+  toggleAssignmentPanel();
+}
+
+function toggleAssignmentPanel() {
+  const body = $('assignPanelBody');
+  const enabled = $('autoAssign').checked;
+  if (body) body.style.display = enabled ? 'block' : 'none';
+
+  const byCsv = assignmentMode() === 'by_csv';
+  const fixedWrap = $('fixedAgentWrap');
+  const csvColumnWrap = $('csvTargetColumnWrap');
+  const mapWrap = $('agentMap');
+  const help = $('assignHelp');
+  const fixedTargetLabel = $('fixedTargetLabel');
+
+  if (fixedWrap) fixedWrap.style.display = enabled && !byCsv ? 'block' : 'none';
+  if (csvColumnWrap) csvColumnWrap.style.display = enabled && byCsv ? 'block' : 'none';
+  if (mapWrap) mapWrap.style.display = enabled && byCsv ? 'grid' : 'none';
+  if (fixedTargetLabel) {
+    fixedTargetLabel.textContent = assignmentTargetType() === 'team'
+      ? 'التيم المسؤول عن كل الحملة'
+      : 'الموظف المسؤول عن كل الحملة';
+  }
+  if (help) {
+    help.textContent = byCsv
+      ? `الأبب هيقرأ قيمة عمود التوزيع في CSV ويربط كل قيمة بـ ${assignmentTargetLabel()}. لو خانة العمود فاضية هيستخدم عمود الـ Custom Attribute.`
+      : `كل المحادثات في الحملة دي هتتعيّن لنفس الـ ${assignmentTargetLabel()} المختار.`;
+  }
+
+  populateFixedAgentSelect();
+  buildAgentMappingUI();
+}
+
+function updateAgentMapStatus(values = null) {
+  const status = $('agentMapStatus');
+  if (!status) return;
+  if (!$('autoAssign')?.checked) {
+    status.textContent = 'التوزيع التلقائي مقفول.';
+    status.className = 'agent-map-status hint';
+    return;
+  }
+  if (assignmentMode() === 'fixed_agent') {
+    const target = currentAssignmentTargets().find(item => String(item.id) === String($('fixedAgentSelect')?.value || ''));
+    if (target) {
+      status.textContent = `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
+      status.className = 'agent-map-status ok';
+    } else {
+      status.textContent = `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
+      status.className = 'agent-map-status warn';
+    }
+    return;
+  }
+  if (!values) values = getAssignmentValues();
+  if (!values.length) {
+    status.textContent = 'مفيش قيم توزيع واضحة في CSV. اتأكد من اسم عمود التوزيع أو عمود الـ Custom Attribute.';
+    status.className = 'agent-map-status warn';
+    return;
+  }
+  const missing = values.filter(value => !agentAssignments[value]);
+  if (missing.length) {
+    status.textContent = `ناقص ربط ${missing.length} قيمة: ${missing.join(', ')}`;
+    status.className = 'agent-map-status warn';
+  } else {
+    status.textContent = `جاهز: ${values.length} قيمة متربطة بـ ${assignmentTargetLabel()}.`;
+    status.className = 'agent-map-status ok';
+  }
+}
+
+function buildAgentMappingUI() {
+  const wrap = $('agentMap');
+  const status = $('agentMapStatus');
+  if (!wrap) return false;
+  wrap.innerHTML = '';
+  if (!$('autoAssign')?.checked) {
+    updateAgentMapStatus([]);
+    return true;
+  }
+  populateFixedAgentSelect();
+  if (assignmentMode() === 'fixed_agent') {
+    updateAgentMapStatus([]);
+    return !!$('fixedAgentSelect')?.value;
+  }
+  if (!csvData.length) {
+    if (status) {
+      status.textContent = 'ارفع CSV الأول عشان أبني خريطة التوزيع.';
+      status.className = 'agent-map-status warn';
+    }
+    return false;
+  }
+  const targetColumn = assignmentValueColumn();
+  if (!targetColumn || !validateCsvColumn(targetColumn, 'عمود التوزيع')) return false;
+  if (!currentAssignmentTargets().length) {
+    if (status) {
+      status.textContent = `اعمل Sync ${assignmentTargetLabel()} الأول.`;
+      status.className = 'agent-map-status warn';
+    }
+    return false;
+  }
+
+  const values = getAssignmentValues();
+  if (!values.length) {
+    updateAgentMapStatus(values);
+    return false;
+  }
+  for (const value of values) {
+    if (!agentAssignments[value]) {
+      const match = findTargetForValue(value);
+      if (match?.id) agentAssignments[value] = String(match.id);
+    }
+  }
+  const options = renderAgentOptions();
+  wrap.innerHTML = values.map(value => `
+    <div class="agent-map-row">
+      <div class="agent-map-value" title="${escapeHtml(value)}">${escapeHtml(value)}</div>
+      <div class="agent-map-arrow">←</div>
+      <select data-agent-value="${escapeHtml(value)}">${options}</select>
+    </div>
+  `).join('');
+  wrap.querySelectorAll('select[data-agent-value]').forEach(select => {
+    const value = select.getAttribute('data-agent-value');
+    select.value = agentAssignments[value] || '';
+    select.addEventListener('change', () => {
+      agentAssignments[value] = select.value;
+      updateAgentMapStatus(values);
+    });
+  });
+  updateAgentMapStatus(values);
+  return values.every(value => agentAssignments[value]);
+}
+
+async function syncInboxAgents() {
+  const acc = $('accId').value;
+  const inboxId = $('sendInboxId').value.trim() || $('inboxSelect').value;
+  if (!inboxId) {
+    log('اختار WhatsApp Inbox الأول قبل Sync Agents', 'err');
+    return false;
+  }
+  const r = await cwFetch(`/api/v1/accounts/${acc}/inbox_members/${inboxId}`, 'GET');
+  if (!r.ok) {
+    log(`فشل Sync Agents — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+    return false;
+  }
+  syncedAgents = r.data.payload || r.data || [];
+  if (!Array.isArray(syncedAgents)) syncedAgents = [];
+  agentAssignments = {};
+  log(`تم جلب ${syncedAgents.length} agent من Inbox #${inboxId}`, syncedAgents.length ? 'ok' : 'warn');
+  if (assignmentTargetType() === 'agent') buildAgentMappingUI();
+  else populateFixedAgentSelect();
+  return !!syncedAgents.length;
+}
+
+async function syncTeams() {
+  const acc = $('accId').value;
+  const r = await cwFetch(`/api/v1/accounts/${acc}/teams`, 'GET');
+  if (!r.ok) {
+    log(`فشل Sync Teams — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
+    return false;
+  }
+  syncedTeams = r.data.payload || r.data || [];
+  if (!Array.isArray(syncedTeams)) syncedTeams = [];
+  agentAssignments = {};
+  log(`تم جلب ${syncedTeams.length} team`, syncedTeams.length ? 'ok' : 'warn');
+  if (assignmentTargetType() === 'team') buildAgentMappingUI();
+  else populateFixedAgentSelect();
+  return !!syncedTeams.length;
+}
+
+async function prepareAssignmentMap(rows) {
+  if (!$('autoAssign')?.checked) return true;
+  if (!currentAssignmentTargets().length) {
+    const ok = assignmentTargetType() === 'team' ? await syncTeams() : await syncInboxAgents();
+    if (!ok) return false;
+  } else {
+    buildAgentMappingUI();
+  }
+  if (assignmentMode() === 'fixed_agent') {
+    const targetId = $('fixedAgentSelect')?.value;
+    if (!targetId) {
+      log(`✗ لا يمكن الإرسال: اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة`, 'err');
+      return false;
+    }
+    return true;
+  }
+  if (!validateCsvColumn(assignmentValueColumn(), 'عمود التوزيع')) return false;
+  const values = getAssignmentValues(rows);
+  const missing = values.filter(value => !agentAssignments[value]);
+  if (missing.length) {
+    log(`✗ لا يمكن الإرسال: قيم توزيع غير مربوطة: ${missing.join(', ')}`, 'err');
+    log(`اختار ${assignmentTargetLabel()} لكل قيمة من خريطة التوزيع ثم جرّب تاني`, 'warn');
+    return false;
+  }
+  return true;
+}
+
+function mappedAgentForRow(row, attrCol) {
+  if (assignmentMode() === 'fixed_agent') {
+    const targetId = $('fixedAgentSelect')?.value;
+    if (!targetId) return null;
+    return currentAssignmentTargets().find(target => String(target.id) === String(targetId)) || { id: targetId, name: `${assignmentTargetLabel()} #${targetId}` };
+  }
+  const value = String(row[assignmentValueColumn()] || row[attrCol] || '').trim();
+  const targetId = agentAssignments[value];
+  if (!targetId) return null;
+  return currentAssignmentTargets().find(target => String(target.id) === String(targetId)) || { id: targetId, name: `${assignmentTargetLabel()} #${targetId}` };
+}
+
+async function assignConversationToCsvAgent(conversationId, row, attrCol) {
+  if (!$('autoAssign')?.checked) return true;
+  const acc = $('accId').value;
+  const target = mappedAgentForRow(row, attrCol);
+  const targetValue = assignmentMode() === 'fixed_agent'
+    ? 'fixed'
+    : String(row[assignmentValueColumn()] || row[attrCol] || '').trim();
+  if (!target?.id) {
+    log(`  ↳ ⚠️ مفيش ${assignmentTargetLabel()} مربوط لقيمة "${targetValue}"`, 'warn');
+    return false;
+  }
+  const body = assignmentTargetType() === 'team'
+    ? { team_id: Number(target.id) }
+    : { assignee_id: Number(target.id) };
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${conversationId}/assignments`,
+    'POST',
+    body
+  );
+  if (r.ok) {
+    log(`  ↳ تم Assign للمحادثة → ${assignmentTargetName(target)} (${assignmentTargetLabel()})`, 'ok');
+    return true;
+  }
+  log(`  ↳ ⚠️ فشل Assign للمحادثة — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'warn');
+  return false;
 }
 </script>
 </body>
