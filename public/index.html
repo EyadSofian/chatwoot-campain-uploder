@@ -1022,11 +1022,15 @@ function parseParamMap(text) {
     if (!trimmed || trimmed.startsWith('#')) return;
     const eq = trimmed.indexOf('=');
     if (eq === -1) return;
-    const key = trimmed.slice(0, eq).trim();
+    const key = normalizeTemplateVariableKey(trimmed.slice(0, eq));
     const value = trimmed.slice(eq + 1).trim();
     if (key && value) params[key] = value;
   });
   return params;
+}
+
+function normalizeTemplateVariableKey(value) {
+  return String(value || '').trim().replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim();
 }
 
 function resolveMappedValue(row, token) {
@@ -1045,6 +1049,43 @@ function buildBodyParams(row) {
     body[key] = resolveMappedValue(row, mapping[key]);
   });
   return body;
+}
+
+function currentTemplateVariables() {
+  return extractTemplateVariables($('messageContent')?.value || '').map(normalizeTemplateVariableKey);
+}
+
+function missingTemplateMappings(row) {
+  const mapping = parseParamMap($('bodyParams').value);
+  return currentTemplateVariables()
+    .filter(variable => {
+      if (!Object.prototype.hasOwnProperty.call(mapping, variable)) return true;
+      return !String(resolveMappedValue(row, mapping[variable]) || '').trim();
+    });
+}
+
+function assertTemplateMappings(rows) {
+  const variables = currentTemplateVariables();
+  if (!variables.length) return true;
+  const mapping = parseParamMap($('bodyParams').value);
+  const missingKeys = variables.filter(variable => !Object.prototype.hasOwnProperty.call(mapping, variable));
+  if (missingKeys.length) {
+    log(`✗ التيمبلت محتاج متغيرات مش معمولة mapping: ${missingKeys.join(', ')}`, 'err');
+    log('اكتبها في Body Variables Mapping بالشكل ده: 1=name أو 2=course_name', 'warn');
+    return false;
+  }
+  const badRows = rows
+    .map((row, index) => ({ index, name: row.name || row.phone_number, missing: missingTemplateMappings(row) }))
+    .filter(item => item.missing.length);
+  if (badRows.length) {
+    badRows.slice(0, 5).forEach(item => {
+      log(`✗ ${item.name}: قيمة المتغيرات فاضية/مش موجودة: ${item.missing.join(', ')}`, 'err');
+    });
+    if (badRows.length > 5) log(`وفيه ${badRows.length - 5} صفوف تانية فيها نفس المشكلة`, 'warn');
+    log('راجع أسماء أعمدة CSV في Body Variables Mapping. لازم تكتب اسم العمود بالظبط أو نص ثابت.', 'warn');
+    return false;
+  }
+  return true;
 }
 
 function renderMessageContent(row) {
@@ -1418,6 +1459,11 @@ async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
     return { status: 'skipped' };
   }
 
+  const missingParams = missingTemplateMappings(row);
+  if (missingParams.length) {
+    throw new Error(`متغيرات التيمبلت ناقصة أو فاضية: ${missingParams.join(', ')}`);
+  }
+
   const payload = buildTemplatePayload(row);
   const r = await cwFetch(
     `/api/v1/accounts/${acc}/conversations/${conv.id}/messages`,
@@ -1458,6 +1504,10 @@ async function sendApiCampaign() {
   const rows = testMode ? csvData.slice(0, 2) : csvData;
   const campaignKey = `api_sent_${safeKey(labelName)}_${safeKey(templateName)}`;
   $('sendApiBtn').disabled = true;
+  if (!assertTemplateMappings(rows)) {
+    $('sendApiBtn').disabled = false;
+    return;
+  }
   if (!await prepareAssignmentMap(rows)) {
     $('sendApiBtn').disabled = false;
     return;
@@ -1472,7 +1522,7 @@ async function sendApiCampaign() {
       const agent = mappedAgentForRow(row, attrCol);
       log(`DRY #${i + 1}: ${row.name || row.phone_number} → inbox ${inboxId}`, 'warn');
       log(`  content: ${content}`, 'inf');
-      log(`  body params: ${JSON.stringify(body)}`, 'inf');
+      log(`  template body params: ${JSON.stringify(body)}`, 'inf');
       if ($('autoAssign')?.checked) log(`  assign ${assignmentTargetLabel()}: ${agent ? assignmentTargetName(agent) : 'غير محدد'}`, agent ? 'inf' : 'warn');
     });
     log('Dry Run خلص — مفيش أي request إنشاء/إرسال اتنفذ', 'ok');
