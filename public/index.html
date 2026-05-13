@@ -463,6 +463,9 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <button class="secondary" id="checkDeliveryBtn" onclick="checkDeliveryStatus()" style="display:none">
       🔍 فحص التسليم
     </button>
+    <button class="secondary" id="retryFailedBtn" onclick="retryFailedMessages()" style="display:none">
+      🔄 إعادة إرسال الفاشلة
+    </button>
   </div>
   <div id="failedNote" class="hint" style="display:none;margin-top:6px;color:#d97706">
     ⚠️ أرقام الخطأ الدائم لا تُعاد إرسالها — تضر بتقييم الرقم في WhatsApp Manager
@@ -505,6 +508,9 @@ let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [
 // يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
 // يُستخدم بواسطة checkDeliveryStatus() لاكتشاف الفشل الـ async من WhatsApp
 let sentMsgTrack = [];
+// الرسائل اللي اكتشف checkDeliveryStatus إنها فشلت async —
+// يُستخدم بواسطة retryFailedMessages() لإعادة الإرسال لنفس المحادثات
+let asyncFailedTrack = [];
 
 const $ = id => document.getElementById(id);
 const stat = (id, v) => $(id).textContent = v;
@@ -624,6 +630,8 @@ async function checkDeliveryStatus() {
   }
   const btn = $('checkDeliveryBtn');
   btn.disabled = true;
+  asyncFailedTrack = [];
+  hideRetryFailedBtn();
 
   // نستنى 30 ثانية عشان webhook التسليم من WhatsApp يوصل Chatwoot
   log('⏳ انتظار ٣٠ ثانية لاستلام حالة التسليم من WhatsApp...', 'warn');
@@ -656,6 +664,10 @@ async function checkDeliveryStatus() {
         const code = extractWhatsAppErrorCode(JSON.stringify(externalErr || ''));
         log(`✗ Conv #${convId} (${row.name || row.phone_number}) — فشل async: ${JSON.stringify(externalErr)}`, 'err');
         recordFailure(row, code, JSON.stringify(externalErr), false);
+        // نحتفظ بها للـ retry التلقائي (إذا مش error دائم)
+        if (!isPermanentWhatsAppError(code)) {
+          asyncFailedTrack.push({ row, convId, code });
+        }
         asyncFailed++;
       } else {
         confirmed++;
@@ -669,13 +681,115 @@ async function checkDeliveryStatus() {
 
   log(`─── نتيجة الفحص: ${confirmed} وصلت فعلاً، ${asyncFailed} فشل async ───`, asyncFailed ? 'warn' : 'ok');
   if (asyncFailed) {
-    log(`📋 اضغط "تحميل الأرقام الفاشلة" — فيها الأرقام اللي فشلت بعد الإرسال`, 'warn');
+    log(`📋 اضغط "تحميل الأرقام الفاشلة" لتصدير القائمة`, 'warn');
     showFailedDownloadBtn();
+    if (asyncFailedTrack.length) {
+      log(`🔄 ${asyncFailedTrack.length} رسالة قابلة لإعادة الإرسال — اضغط "إعادة إرسال الفاشلة"`, 'warn');
+      showRetryFailedBtn();
+    }
   } else {
     log(`✓ كل الرسائل تم تسليمها بنجاح`, 'ok');
   }
 
   btn.textContent = `✓ تم الفحص (${confirmed} ✓ / ${asyncFailed} ✗)`;
+  btn.disabled = false;
+}
+
+function showRetryFailedBtn() {
+  const btn = $('retryFailedBtn');
+  if (btn) {
+    btn.style.display = '';
+    btn.textContent = `🔄 إعادة إرسال الفاشلة (${asyncFailedTrack.length})`;
+    btn.disabled = false;
+  }
+}
+
+function hideRetryFailedBtn() {
+  const btn = $('retryFailedBtn');
+  if (btn) btn.style.display = 'none';
+}
+
+// ─── Direct Retry to Known Conversation ───────────────────
+// يرسل التيمبلت مباشرة على محادثة موجودة بدون إعادة إنشاء Contact أو Label.
+// لا يمر على duplicateGuard لأن الرسالة الأصلية فشلت — مش إرسال جديد.
+async function retryTemplateToConv(convId, row) {
+  const acc = $('accId').value;
+  const payload = buildTemplatePayload(row);
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${convId}/messages`,
+    'POST',
+    payload,
+    1
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+  const extErr = r.data?.content_attributes?.external_error || r.data?.external_error;
+  if (r.data?.status === 'failed' || extErr) {
+    throw new Error(`فشل التسليم: ${JSON.stringify(extErr || r.data)}`);
+  }
+  return r.data?.id;
+}
+
+// ─── Auto Retry Failed Messages ───────────────────────────
+// يعيد إرسال الرسائل اللي اكتشف checkDeliveryStatus إنها فشلت async.
+// قواعد الأمان:
+//   - محاولة واحدة فقط لكل رسالة (تكرار أكثر = نمط spam = quality drop)
+//   - 10 ثواني فاصلة بين كل retry
+//   - لو نسبة الفشل > 30% نوقف ونحذّر (مشكلة في Template/Inbox)
+//   - الأخطاء الدائمة (PERMANENT) تُستبعد تلقائياً من checkDeliveryStatus
+async function retryFailedMessages() {
+  if (!asyncFailedTrack.length) {
+    log('مفيش رسائل فاشلة قابلة لإعادة الإرسال', 'warn');
+    return;
+  }
+
+  const btn = $('retryFailedBtn');
+  btn.disabled = true;
+
+  // حماية: لو نسبة الفشل عالية — موقف ولا تجرب تاني
+  const failureRate = asyncFailedTrack.length / sentMsgTrack.length;
+  if (failureRate > 0.3) {
+    log(`⛔ نسبة الفشل ${Math.round(failureRate * 100)}% — عالية جداً للـ retry`, 'err');
+    log(`  راجع الـ Template والـ Inbox قبل إعادة الإرسال — إعادة الإرسال مع فشل عالي تضر بتقييم الرقم`, 'warn');
+    btn.textContent = '⛔ نسبة فشل عالية — راجع الـ Template';
+    return;
+  }
+
+  log(`─── إعادة إرسال ${asyncFailedTrack.length} رسالة فاشلة (مرة واحدة فقط) ───`, 'warn');
+  log(`⚠️ محاولة واحدة فقط لكل رسالة — التكرار يضر بتقييم الرقم`, 'warn');
+
+  const toRetry = [...asyncFailedTrack];
+  asyncFailedTrack = []; // نمسح عشان ما نكررش
+  let retryOk = 0, retryFail = 0;
+
+  for (let i = 0; i < toRetry.length; i++) {
+    const { row, convId, code } = toRetry[i];
+
+    // 10 ثواني فاصلة قبل كل retry
+    log(`  ⏳ انتظار 10 ثواني (${i + 1}/${toRetry.length})...`, 'inf');
+    btn.textContent = `🔄 انتظار... (${i + 1}/${toRetry.length})`;
+    await new Promise(r => setTimeout(r, 10000));
+
+    try {
+      log(`  🔄 إعادة إرسال: ${row.name || row.phone_number} → Conv #${convId}`, 'inf');
+      await retryTemplateToConv(convId, row);
+      log(`  ✓ وصلت — Conv #${convId}`, 'ok');
+      retryOk++;
+    } catch (e) {
+      const retryCode = extractWhatsAppErrorCode(e.message);
+      log(`  ✗ فشلت إعادة الإرسال — ${e.message}`, 'err');
+      log(`  📌 Conv #${convId} مش هنجرب تاني — راجعه يدوياً في Chatwoot`, 'warn');
+      recordFailure(row, retryCode || code, e.message, true);
+      retryFail++;
+    }
+  }
+
+  log(`─── انتهت إعادة الإرسال: ${retryOk} نجح، ${retryFail} فشل نهائي ───`, retryFail ? 'warn' : 'ok');
+  if (retryFail) {
+    showFailedDownloadBtn();
+    log(`📋 اضغط "تحميل الأرقام الفاشلة" — الأرقام دي محتاج تراجعها يدوياً`, 'warn');
+  }
+
+  btn.textContent = `✓ إعادة الإرسال (${retryOk} ✓ / ${retryFail} ✗)`;
   btn.disabled = false;
 }
 
@@ -1842,7 +1956,9 @@ async function sendApiCampaign() {
   // ─── إعادة تعيين سجلات الفشل والتتبع ────────────────────────
   resetFailedRecords();
   sentMsgTrack = [];
+  asyncFailedTrack = [];
   hideCheckDeliveryBtn();
+  hideRetryFailedBtn();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
