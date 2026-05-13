@@ -193,7 +193,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v1.12 Direct Assign</div>
+    <div class="badge">v1.13 Quality-Safe Sending</div>
     <button class="secondary theme-btn" id="themeBtn" type="button">Dark</button>
   </div>
 
@@ -425,6 +425,18 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <span class="slider"></span>
       </label>
     </div>
+    <!-- Rate Limit — يحمي تقييم الرقم (Quality Rating) من الانخفاض بسبب الإرسال السريع -->
+    <div class="toggle-row" style="align-items:flex-start;flex-direction:column;gap:6px">
+      <label style="display:flex;flex-direction:column;gap:2px">
+        <span>سرعة الإرسال (رسالة/دقيقة) — كل ما قلّت، تقييم الرقم أكثر أماناً</span>
+        <span class="hint">السرعة العالية تزيد احتمالية الـ Blocks والـ Reports → تنخفض جودة الرقم خلال ٧ أيام</span>
+      </label>
+      <select id="sendRateLimit" style="width:100%;max-width:320px">
+        <option value="30">30 / دقيقة — أبطأ وأكثر أماناً (مناسب لرقم جديد)</option>
+        <option value="60" selected>60 / دقيقة — الافتراضي الموصى به</option>
+        <option value="100">100 / دقيقة — الحد الأقصى المسموح (للأرقام عالية الجودة فقط)</option>
+      </select>
+    </div>
     <button class="primary" id="sendApiBtn" onclick="sendApiCampaign()" style="width:100%;margin-top:.5rem">
       إرسال/اختبار Template عبر Chatwoot API
     </button>
@@ -445,6 +457,12 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
   <div class="btn-row">
     <button class="primary" id="runBtn" onclick="runUpload()" disabled>ابدأ الرفع</button>
     <button class="secondary" onclick="downloadLog()">تحميل Log</button>
+    <button class="secondary" id="downloadFailedBtn" onclick="downloadFailedCSV()" style="display:none">
+      📋 تحميل الأرقام الفاشلة
+    </button>
+  </div>
+  <div id="failedNote" class="hint" style="display:none;margin-top:6px;color:#d97706">
+    ⚠️ أرقام الخطأ الدائم لا تُعاد إرسالها — تضر بتقييم الرقم في WhatsApp Manager
   </div>
 
   <!-- Re-trigger Automation Card -->
@@ -526,6 +544,48 @@ function downloadLog() {
   a.href = URL.createObjectURL(blob);
   a.download = `chatwoot-log-${Date.now()}.txt`;
   a.click();
+}
+
+// ─── Failed Numbers CSV Export ─────────────────────────────
+// CSV بصيغة UTF-8 with BOM عشان Excel يفتح العربي صح.
+// الهدف: المستخدم يعرف الأرقام اللي ما وصلتش، يحذف الدائم منهم،
+// ويوقف إرسال نفس الرسالة لنفس الرقم تاني (حماية لتقييم الرقم).
+function downloadFailedCSV() {
+  if (!failedRecords.length) {
+    log('مفيش أرقام فاشلة للتحميل', 'inf');
+    return;
+  }
+  const headers = ['phone', 'name', 'error_code', 'error_description_ar', 'timestamp', 'retry_attempted', 'is_permanent', 'raw_error'];
+  const esc = v => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = [headers.join(',')];
+  for (const rec of failedRecords) {
+    rows.push(headers.map(h => esc(rec[h])).join(','));
+  }
+  // BOM للـ Excel + ملاحظة تحذيرية في أول سطر
+  const warning = '# تحذير: أرقام is_permanent=نعم لا تُعد إرسالها — تضر بتقييم الرقم\n';
+  const csv = '﻿' + warning + rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `failed-numbers-${Date.now()}.csv`;
+  a.click();
+}
+
+function showFailedDownloadBtn() {
+  const btn = $('downloadFailedBtn');
+  const note = $('failedNote');
+  if (btn) btn.style.display = '';
+  if (note) note.style.display = '';
+}
+
+function hideFailedDownloadBtn() {
+  const btn = $('downloadFailedBtn');
+  const note = $('failedNote');
+  if (btn) btn.style.display = 'none';
+  if (note) note.style.display = 'none';
 }
 
 function clearFile(e) {
@@ -1435,6 +1495,135 @@ async function markCampaignSent(conversationId, attrs, campaignKey, labelName, t
   );
 }
 
+// ─── WhatsApp Error Code Handling ──────────────────────────
+// تصنيف الأخطاء حسب أمان إعادة المحاولة:
+//   - RETRYABLE: 131026 فقط (Message undeliverable عام — أحياناً مؤقت)
+//   - PERMANENT: أخطاء واضحة دائمة — إعادة المحاولة تضر بتقييم الرقم
+//     لأن المستخدم لو شاف نفس الرسالة مرتين هيـ block/report → quality drop
+//   - باقي الأكواد: نسجلها فشل بدون retry (أسباب template/permission)
+const PERMANENT_WA_ERRORS = {
+  131047: 'انتهت نافذة الـ 24 ساعة — لازم template جديد',
+  131048: 'تجاوز Rate Limit للرسائل التسويقية — توقف فوراً لحماية الرقم',
+  131049: 'تجاوز حد الـ Marketing Templates لهذا المستخدم — Meta رفضت التسليم',
+  131051: 'نوع رسالة غير مدعوم',
+  131052: 'الوسائط لا يمكن تنزيلها',
+  131053: 'فشل رفع الوسائط',
+  132000: 'عدد متغيرات Template غير مطابق',
+  132001: 'Template غير موجود أو غير معتمد',
+  132005: 'Hash للـ Template غير مطابق',
+  132007: 'محتوى Template مرفوض من Meta',
+  132012: 'متغير Template بصيغة غير صحيحة',
+  132015: 'Template معلّق (paused) — لا يمكن إرساله',
+  132016: 'Template محذوف',
+  133000: 'فشل قراءة الرقم',
+  133004: 'الرقم غير مسجل في WhatsApp Business API',
+  133005: 'فشل التحقق من الرقم',
+  133006: 'فشل في إعدادات الرقم',
+  133008: 'الرقم محظور من Meta',
+  133009: 'الرقم في حالة مراجعة',
+  133010: 'الرقم غير مكتمل التسجيل'
+};
+
+const RETRYABLE_WA_ERRORS = {
+  131026: 'الرسالة لم تُسلَّم — قد يكون الرقم غير مفعّل على WhatsApp أو throttling مؤقت'
+};
+
+function extractWhatsAppErrorCode(errorMsg) {
+  if (!errorMsg) return null;
+  const s = String(errorMsg);
+  // ندعم أكثر من شكل عشان Chatwoot ممكن يرجع الـ error بصيغ مختلفة
+  const patterns = [
+    /"code"\s*:\s*(\d{6})/,
+    /"error_code"\s*:\s*"?(\d{6})"?/,
+    /\b(13[0-9]{4})\b/  // أي كود 13xxxx
+  ];
+  for (const re of patterns) {
+    const m = s.match(re);
+    if (m) return parseInt(m[1], 10);
+  }
+  return null;
+}
+
+function describeWhatsAppError(code) {
+  if (!code) return 'خطأ غير معروف — راجع اللوج';
+  if (RETRYABLE_WA_ERRORS[code]) return RETRYABLE_WA_ERRORS[code];
+  if (PERMANENT_WA_ERRORS[code]) return PERMANENT_WA_ERRORS[code];
+  return `كود ${code} — راجع وثائق Meta`;
+}
+
+function isPermanentWhatsAppError(code) {
+  return Boolean(code && PERMANENT_WA_ERRORS[code]);
+}
+
+function isRetryableWhatsAppError(code) {
+  return Boolean(code && RETRYABLE_WA_ERRORS[code]);
+}
+
+// ─── Failed Records Tracking ───────────────────────────────
+let failedRecords = [];
+
+function resetFailedRecords() {
+  failedRecords = [];
+  hideFailedDownloadBtn();
+}
+
+function recordFailure(row, code, rawMessage, retryAttempted) {
+  failedRecords.push({
+    phone: row.phone_number || '',
+    name: row.name || '',
+    error_code: code || '',
+    error_description_ar: describeWhatsAppError(code),
+    timestamp: new Date().toISOString(),
+    retry_attempted: retryAttempted ? 'نعم' : 'لا',
+    is_permanent: isPermanentWhatsAppError(code) ? 'نعم — لا تُعد الإرسال' : 'غير مؤكد',
+    raw_error: rawMessage || ''
+  });
+}
+
+// ─── Safe Retry Wrapper ────────────────────────────────────
+// قاعدة الأمان: نعيد المحاولة مرة واحدة فقط، وفقط للأخطاء الـ retryable.
+// أكثر من محاولة = نمط spam = تقييم الرقم ينخفض في خلال 7 أيام (rolling window).
+// المستخدم اللي شاف الرسالة الفاشلة مرة وشافها تاني = احتمالية الـ block أعلى.
+async function sendTemplateForRowWithRetry(row, labelName, attrCol, campaignKey) {
+  try {
+    return await sendTemplateForRow(row, labelName, attrCol, campaignKey);
+  } catch (e) {
+    const code = extractWhatsAppErrorCode(e.message);
+
+    // خطأ دائم → نسجله ونوقف (الـ retry هيضر تقييم الرقم)
+    if (isPermanentWhatsAppError(code)) {
+      log(`  ⛔ خطأ دائم (${code}) — ${describeWhatsAppError(code)} — لن نعيد المحاولة`, 'err');
+      recordFailure(row, code, e.message, false);
+      return { status: 'error' };
+    }
+
+    // ليس 131026 (ولا أي retryable) → فشل عادي بدون retry (قد يكون template/permission)
+    if (!isRetryableWhatsAppError(code)) {
+      log(`  ✗ فشل (${code || 'unknown'}) — بدون retry`, 'err');
+      recordFailure(row, code, e.message, false);
+      return { status: 'error' };
+    }
+
+    // هنا فقط 131026 — نعيد المحاولة مرة واحدة بعد 10 ثواني
+    // 10 ثواني = فسحة كافية لأي throttling مؤقت من Meta،
+    // وفي نفس الوقت المستخدم ما شافش حاجة (الأخطاء قبل التسليم).
+    log(`  ⏳ خطأ 131026 — انتظار 10 ثواني ثم محاولة واحدة أخيرة فقط`, 'warn');
+    await new Promise(r => setTimeout(r, 10000));
+
+    try {
+      const retryResult = await sendTemplateForRow(row, labelName, attrCol, campaignKey);
+      log(`  ✓ نجحت إعادة المحاولة بعد 131026`, 'ok');
+      return retryResult;
+    } catch (retryErr) {
+      const retryCode = extractWhatsAppErrorCode(retryErr.message);
+      log(`  ✗ فشلت إعادة المحاولة — ${retryErr.message}`, 'err');
+      log(`  📌 الرقم سيُضاف لقائمة الفشل ولن نحاول مرة أخرى (حماية للتقييم)`, 'warn');
+      recordFailure(row, retryCode || code, retryErr.message, true);
+      return { status: 'error' };
+    }
+  }
+}
+
 async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
   const acc = $('accId').value;
   const inboxId = $('sendInboxId').value.trim();
@@ -1474,6 +1663,19 @@ async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
 
   if (!r.ok) {
     throw new Error(`فشل إرسال template — HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+  }
+
+  // ✅ بعض إصدارات Chatwoot ترجع HTTP 200 لكن الرسالة فعلياً فشلت
+  // (status: "failed" أو external_error في الـ payload).
+  // نكشفها هنا عشان نقدر نعمل retry / record للأخطاء الـ synchronous.
+  // ملاحظة: الأخطاء اللي بتحصل async (webhook بعد ثواني/دقائق) مش هتظهر هنا
+  // — لازم المستخدم يراجع Chatwoot UI أو نعمل polling (مش مفعل حالياً).
+  const msgStatus = r.data?.status;
+  const externalError = r.data?.content_attributes?.external_error
+    || r.data?.external_error
+    || r.data?.message_status_error;
+  if (msgStatus === 'failed' || externalError) {
+    throw new Error(`فشل التسليم — ${JSON.stringify(externalError || r.data)}`);
   }
 
   await markCampaignSent(conv.id, attrs, campaignKey, labelName, templateName);
@@ -1531,33 +1733,49 @@ async function sendApiCampaign() {
   }
 
   let sent = 0, skipped = 0, errors = 0;
-  const SEND_BATCH = 2;
-  const SEND_DELAY = 1200;
 
-  for (let i = 0; i < rows.length; i += SEND_BATCH) {
-    const batch = rows.slice(i, i + SEND_BATCH);
-    const results = await Promise.all(batch.map(async row => {
-      try {
-        log(`إرسال: ${row.name || row.phone_number}`, 'inf');
-        return await sendTemplateForRow(row, labelName, attrCol, campaignKey);
-      } catch (e) {
-        log(`✗ ${row.name || row.phone_number} — ${e.message}`, 'err');
-        return { status: 'error' };
-      }
-    }));
+  // ─── Rate Limiting — حماية تقييم الرقم (Quality Rating) ──────
+  // الإرسال سيريال (واحد في كل مرة) — متوازي يخلي الـ bursts عالية
+  // والـ bursts تزيد الـ blocks والـ reports من المستخدمين.
+  // الحد الأقصى مفروض في الكود (HARD_CAP) حتى لو UI اتعدّل.
+  const HARD_CAP_PER_MIN = 100;
+  const requestedRate = parseInt($('sendRateLimit')?.value, 10) || 60;
+  const safeRate = Math.min(Math.max(requestedRate, 1), HARD_CAP_PER_MIN);
+  const SEND_DELAY = Math.ceil(60000 / safeRate); // ms بين كل رسالة
+  log(`⚙️ معدل الإرسال: ${safeRate} رسالة/دقيقة — delay ${SEND_DELAY}ms`, 'inf');
+  if (safeRate >= 100) {
+    log(`⚠️ معدل الإرسال عالي — راقب تقييم الرقم في WhatsApp Manager`, 'warn');
+  }
 
-    results.forEach(r => {
-      if (r.status === 'sent') sent++;
-      else if (r.status === 'skipped') skipped++;
+  // ─── سجل الفشل (لتصديره CSV لاحقاً) ─────────────────────────
+  resetFailedRecords();
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    try {
+      log(`إرسال (${i + 1}/${rows.length}): ${row.name || row.phone_number}`, 'inf');
+      const result = await sendTemplateForRowWithRetry(row, labelName, attrCol, campaignKey);
+      if (result.status === 'sent') sent++;
+      else if (result.status === 'skipped') skipped++;
       else errors++;
-    });
+    } catch (e) {
+      const code = extractWhatsAppErrorCode(e.message);
+      log(`✗ ${row.name || row.phone_number} — ${e.message}`, 'err');
+      recordFailure(row, code, e.message, false);
+      errors++;
+    }
 
-    if (i + SEND_BATCH < rows.length) {
+    // delay بين كل رسالة والـ next (مش بعد آخر رسالة)
+    if (i + 1 < rows.length) {
       await new Promise(r => setTimeout(r, SEND_DELAY));
     }
   }
 
   log(`─── انتهى API Campaign: ${sent} sent, ${skipped} skipped, ${errors} errors ───`, errors ? 'warn' : 'ok');
+  if (failedRecords.length) {
+    log(`📋 ${failedRecords.length} رقم فشل الإرسال إليهم — اضغط "تحميل الأرقام الفاشلة"`, 'warn');
+    showFailedDownloadBtn();
+  }
   $('sendApiBtn').disabled = false;
 }
 
