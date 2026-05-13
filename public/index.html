@@ -460,9 +460,15 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <button class="secondary" id="downloadFailedBtn" onclick="downloadFailedCSV()" style="display:none">
       📋 تحميل الأرقام الفاشلة
     </button>
+    <button class="secondary" id="checkDeliveryBtn" onclick="checkDeliveryStatus()" style="display:none">
+      🔍 فحص التسليم
+    </button>
   </div>
   <div id="failedNote" class="hint" style="display:none;margin-top:6px;color:#d97706">
     ⚠️ أرقام الخطأ الدائم لا تُعاد إرسالها — تضر بتقييم الرقم في WhatsApp Manager
+  </div>
+  <div id="deliveryNote" class="hint" style="display:none;margin-top:4px;color:#6b7280">
+    💡 "فحص التسليم" يراجع حالة الرسائل بعد الإرسال — يكشف الفشل الـ async اللي ما ظهرش في اللوج
   </div>
 
   <!-- Re-trigger Automation Card -->
@@ -496,6 +502,9 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 <script>
 let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
 let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [], agentAssignments = {};
+// يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
+// يُستخدم بواسطة checkDeliveryStatus() لاكتشاف الفشل الـ async من WhatsApp
+let sentMsgTrack = [];
 
 const $ = id => document.getElementById(id);
 const stat = (id, v) => $(id).textContent = v;
@@ -586,6 +595,88 @@ function hideFailedDownloadBtn() {
   const note = $('failedNote');
   if (btn) btn.style.display = 'none';
   if (note) note.style.display = 'none';
+}
+
+function showCheckDeliveryBtn() {
+  const btn = $('checkDeliveryBtn');
+  const note = $('deliveryNote');
+  if (btn) { btn.style.display = ''; btn.textContent = '🔍 فحص التسليم'; btn.disabled = false; }
+  if (note) note.style.display = '';
+}
+
+function hideCheckDeliveryBtn() {
+  const btn = $('checkDeliveryBtn');
+  const note = $('deliveryNote');
+  if (btn) btn.style.display = 'none';
+  if (note) note.style.display = 'none';
+}
+
+// ─── Post-Campaign Async Delivery Check ───────────────────────
+// الفشل الـ async: Chatwoot بيقول "200 OK" للـ app، لكن بعدين
+// WhatsApp بيرجع 131026 عبر webhook → Chatwoot يعلّم الرسالة failed.
+// الـ app ما شافش الفشل ده لأنه حصل بعد ما الـ POST رجع.
+// الحل: بعد الكامبين نستنى 30 ثانية (وقت WhatsApp webhook يوصل Chatwoot)
+// ثم نراجع حالة كل رسالة اتبعتت — ونسجل الفاشلة في CSV.
+async function checkDeliveryStatus() {
+  if (!sentMsgTrack.length) {
+    log('مفيش رسائل محتاج تتفحص — شغّل كامبين الأول', 'warn');
+    return;
+  }
+  const btn = $('checkDeliveryBtn');
+  btn.disabled = true;
+
+  // نستنى 30 ثانية عشان webhook التسليم من WhatsApp يوصل Chatwoot
+  log('⏳ انتظار ٣٠ ثانية لاستلام حالة التسليم من WhatsApp...', 'warn');
+  for (let i = 30; i > 0; i--) {
+    btn.textContent = `🔍 فحص التسليم (${i}s)`;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  btn.textContent = '🔍 جاري الفحص...';
+  log(`─── فحص حالة التسليم لـ ${sentMsgTrack.length} رسالة ───`, 'inf');
+
+  const acc = $('accId').value;
+  let asyncFailed = 0, confirmed = 0;
+
+  for (const { row, convId, msgId } of sentMsgTrack) {
+    try {
+      const r = await cwFetch(`/api/v1/accounts/${acc}/conversations/${convId}/messages`, 'GET');
+      if (!r.ok) continue;
+
+      const messages = r.data?.payload || [];
+      // نبحث عن الرسالة بالـ ID المحفوظ، أو آخر رسالة صادرة (type 1)
+      const msg = msgId
+        ? messages.find(m => m.id === msgId)
+        : [...messages].reverse().find(m => m.message_type === 1);
+
+      if (!msg) continue;
+
+      if (msg.status === 'failed') {
+        const externalErr = msg.content_attributes?.external_error || msg.external_error;
+        const code = extractWhatsAppErrorCode(JSON.stringify(externalErr || ''));
+        log(`✗ Conv #${convId} (${row.name || row.phone_number}) — فشل async: ${JSON.stringify(externalErr)}`, 'err');
+        recordFailure(row, code, JSON.stringify(externalErr), false);
+        asyncFailed++;
+      } else {
+        confirmed++;
+      }
+    } catch (e) {
+      log(`خطأ في فحص Conv #${convId}: ${e.message}`, 'warn');
+    }
+    // delay صغير بين الـ checks عشان ما نضغطش على الـ API
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  log(`─── نتيجة الفحص: ${confirmed} وصلت فعلاً، ${asyncFailed} فشل async ───`, asyncFailed ? 'warn' : 'ok');
+  if (asyncFailed) {
+    log(`📋 اضغط "تحميل الأرقام الفاشلة" — فيها الأرقام اللي فشلت بعد الإرسال`, 'warn');
+    showFailedDownloadBtn();
+  } else {
+    log(`✓ كل الرسائل تم تسليمها بنجاح`, 'ok');
+  }
+
+  btn.textContent = `✓ تم الفحص (${confirmed} ✓ / ${asyncFailed} ✗)`;
+  btn.disabled = false;
 }
 
 function clearFile(e) {
@@ -1681,7 +1772,8 @@ async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
   await markCampaignSent(conv.id, attrs, campaignKey, labelName, templateName);
   log(`  ↳ Template اتبعت واتسجلت في Conv #${conv.id}`, 'ok');
   await assignConversationToCsvAgent(conv.id, row, attrCol);
-  return { status: 'sent' };
+  // نرجع convId و msgId عشان checkDeliveryStatus تقدر تراجع الحالة الـ async بعدين
+  return { status: 'sent', convId: conv.id, msgId: r.data?.id };
 }
 
 async function sendApiCampaign() {
@@ -1747,16 +1839,21 @@ async function sendApiCampaign() {
     log(`⚠️ معدل الإرسال عالي — راقب تقييم الرقم في WhatsApp Manager`, 'warn');
   }
 
-  // ─── سجل الفشل (لتصديره CSV لاحقاً) ─────────────────────────
+  // ─── إعادة تعيين سجلات الفشل والتتبع ────────────────────────
   resetFailedRecords();
+  sentMsgTrack = [];
+  hideCheckDeliveryBtn();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     try {
       log(`إرسال (${i + 1}/${rows.length}): ${row.name || row.phone_number}`, 'inf');
       const result = await sendTemplateForRowWithRetry(row, labelName, attrCol, campaignKey);
-      if (result.status === 'sent') sent++;
-      else if (result.status === 'skipped') skipped++;
+      if (result.status === 'sent') {
+        sent++;
+        // نحتفظ بـ convId + msgId لفحص التسليم الـ async لاحقاً
+        if (result.convId) sentMsgTrack.push({ row, convId: result.convId, msgId: result.msgId });
+      } else if (result.status === 'skipped') skipped++;
       else errors++;
     } catch (e) {
       const code = extractWhatsAppErrorCode(e.message);
@@ -1776,6 +1873,9 @@ async function sendApiCampaign() {
     log(`📋 ${failedRecords.length} رقم فشل الإرسال إليهم — اضغط "تحميل الأرقام الفاشلة"`, 'warn');
     showFailedDownloadBtn();
   }
+  // نظهر زرار فحص التسليم الـ async دائماً بعد أي إرسال حقيقي
+  // (الفشل الـ async ممكن يحصل حتى لو الإرسال الأولي نجح)
+  if (sentMsgTrack.length) showCheckDeliveryBtn();
   $('sendApiBtn').disabled = false;
 }
 
