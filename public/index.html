@@ -250,6 +250,15 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <span class="slider"></span>
       </label>
     </div>
+    <div class="toggle-row">
+      <label title="عرض كل تفاصيل العمليات في الشاشة — يبطّئ المتصفح مع الملفات الكبيرة. التفاصيل بتتسجل في تحميل اللوج بكل الأحوال.">
+        تفاصيل اللوج على الشاشة <span style="opacity:.6;font-size:.85em">— أبطأ مع الملفات الكبيرة</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="verboseLog">
+        <span class="slider"></span>
+      </label>
+    </div>
   </div>
 
   <!-- CSV Upload -->
@@ -329,6 +338,19 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       <label>Body Variables Mapping</label>
       <textarea id="bodyParams" placeholder="1=name&#10;2=course_name"></textarea>
       <div class="hint">كل سطر بصيغة رقم المتغير = اسم عمود في CSV. لو الاسم مش موجود كعمود هيتعامل كنص ثابت.</div>
+      <div class="toggle-row" style="margin-top:8px">
+        <label title="يحوّل المتغيرات متعددة الأسطر لسطر واحد آمن لواتساب — يمنع رفض Meta للرسالة (#100 Invalid parameter)">
+          ✨ تنظيف تلقائي للمتغيرات قبل الإرسال
+          <span style="opacity:.6;font-size:.85em">— يحوّل السطور لمسافات (آمن لواتساب)</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="normalizeVars" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <button class="secondary" type="button" onclick="previewNormalizedVars()" style="margin-top:6px">
+        🔍 اختبار الصياغة (معاينة بعد التنظيف)
+      </button>
     </div>
     <div class="field">
       <label>Message Preview / Content</label>
@@ -551,8 +573,29 @@ function log(msg, t = 'inf') {
   const entry = `[${time}] ${msg}`;
   logEntries.push(entry);
   const d = $('log');
-  d.innerHTML += `<div class="log-item ${t}">${entry}</div>`;
+  // استخدام createElement بدل innerHTML += عشان نتجنب O(N²) re-parse
+  // مع آلاف السطور — التحسن قد يكون 20-50× أسرع
+  const div = document.createElement('div');
+  div.className = `log-item ${t}`;
+  div.textContent = entry;
+  d.appendChild(div);
   d.scrollTop = d.scrollHeight;
+}
+
+// vlog = verbose log — يكتب في download log دائماً، بس يظهر في الشاشة
+// فقط لو "تفاصيل اللوج" مفعّل. ده بيقلل DOM updates مع الملفات الكبيرة.
+function vlog(msg, t = 'inf') {
+  const time = new Date().toLocaleTimeString('en-GB');
+  const entry = `[${time}] ${msg}`;
+  logEntries.push(entry);
+  if ($('verboseLog')?.checked) {
+    const d = $('log');
+    const div = document.createElement('div');
+    div.className = `log-item ${t}`;
+    div.textContent = entry;
+    d.appendChild(div);
+    d.scrollTop = d.scrollHeight;
+  }
 }
 
 function clearLog() { $('log').innerHTML = ''; logEntries = []; }
@@ -1021,18 +1064,28 @@ async function findContactByPhone(phone) {
   const acc  = $('accId').value;
   const norm = normPhone(phone);
 
-  // جرب الصيغتين: مع + ومن غير +
-  const queries = [phone, norm].filter((v, i, a) => a.indexOf(v) === i);
-
-  for (const q of queries) {
-    const s = await cwFetch(
-      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(q)}&page=1`, 'GET');
-    if (!s.ok) continue;
+  // ✅ بحث بالصيغة المعيارية (بدون +) — Chatwoot's LIKE search بيلاقي الصيغتين
+  // (لأن "+966..." بيحتوي "966..."). ده بيوفّر نص الـ search calls.
+  const s = await cwFetch(
+    `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(norm)}&page=1`, 'GET');
+  if (s.ok) {
     const contacts = s.data.payload || [];
-    // ✅ exact match فقط — مفيش first-result fallback
+    // exact match فقط — مفيش first-result fallback
     // ده بيمنع الـ false positives لما الـ search بيرجع contacts غير مطابقة
     const match = contacts.find(c => normPhone(c.phone_number) === norm);
     if (match) return match;
+  }
+
+  // Fallback: لو الصيغة المعيارية مالقتش حاجة وكان الرقم الأصلي مختلف،
+  // جرّب الرقم الأصلي (نادراً ما يحصل، بس للسلامة)
+  if (phone && phone !== norm) {
+    const s2 = await cwFetch(
+      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(phone)}&page=1`, 'GET');
+    if (s2.ok) {
+      const contacts = s2.data.payload || [];
+      const match = contacts.find(c => normPhone(c.phone_number) === norm);
+      if (match) return match;
+    }
   }
   return null;
 }
@@ -1044,7 +1097,7 @@ async function applyCustomAttr(contactId, attrKey, attrVal, name, existing = nul
   const r = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}`, 'PATCH',
     { custom_attributes: merged });
   if (r.ok) {
-    log(`  ↳ ✅ PATCH نجح — Attr "${attrKey}" = "${attrVal}"`, 'ok');
+    vlog(`  ↳ ✅ PATCH نجح — Attr "${attrKey}" = "${attrVal}"`, 'ok');
   } else {
     log(`  ↳ ❌ PATCH فشل لـ ${name} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
   }
@@ -1062,15 +1115,15 @@ async function upsertContact(row, attrKey) {
   const hasAttr = !!(attrKey && attrVal);
   const forceUpdate = $('forceUpdate')?.checked || false;
 
-  // 🔍 Debug: log what we're working with
+  // 🔍 Debug: log what we're working with — verbose
   if (attrKey) {
     if (attrVal) {
-      log(`  🔍 Custom Attr: ${attrKey} = "${attrVal}"`, 'inf');
+      vlog(`  🔍 Custom Attr: ${attrKey} = "${attrVal}"`, 'inf');
     } else {
-      log(`  ⚠️ العمود "${attrKey}" مش موجود في الـ CSV. الأعمدة: [${Object.keys(row).join(', ')}]`, 'warn');
+      vlog(`  ⚠️ العمود "${attrKey}" مش موجود في الـ CSV. الأعمدة: [${Object.keys(row).join(', ')}]`, 'warn');
     }
   } else {
-    log(`  ⚠️ خانة "عمود الـ Custom Attribute" فاضية — مفيش PATCH هيتعمل`, 'warn');
+    vlog(`  ⚠️ خانة "عمود الـ Custom Attribute" فاضية — مفيش PATCH هيتعمل`, 'warn');
   }
 
   // ── 1. ابحث الأول (Search-First) — بيرجع contact + attrs + labels في request واحد ──
@@ -1079,16 +1132,16 @@ async function upsertContact(row, attrKey) {
   // ── 2. لو موجود — حدّث (مع smart skip) ──────────────────────
   if (contact) {
     const id = contact.id;
-    log(`  ↳ موجود → ID ${id}`, 'inf');
+    vlog(`  ↳ موجود → ID ${id}`, 'inf');
 
     // Smart Skip للـ PATCH: لو الـ attr نفس القيمة + مفيش "وضع التأكيد" مفعّل → skip
     if (hasAttr) {
       const currentVal = contact.custom_attributes?.[attrKey];
       if (currentVal === attrVal && !forceUpdate) {
-        log(`  ↳ ⚡ Attr "${attrKey}" = "${attrVal}" موجود — تخطي PATCH`, 'inf');
+        vlog(`  ↳ ⚡ Attr "${attrKey}" = "${attrVal}" موجود — تخطي PATCH`, 'inf');
       } else {
         if (currentVal && currentVal !== attrVal) {
-          log(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
+          vlog(`  ↳ تغيير Attr: "${currentVal}" → "${attrVal}"`, 'warn');
         }
         await applyCustomAttr(id, attrKey, attrVal, name, contact.custom_attributes);
       }
@@ -1103,7 +1156,7 @@ async function upsertContact(row, attrKey) {
     return null;
   }
 
-  log(`  ↳ مش موجود — إنشاء جديد...`, 'inf');
+  vlog(`  ↳ مش موجود — إنشاء جديد...`, 'inf');
   const r = await cwFetch(`/api/v1/accounts/${acc}/contacts`, 'POST',
     { name, phone_number: phone });
 
@@ -1124,7 +1177,7 @@ async function upsertContact(row, attrKey) {
       const existingContact = r.data?.payload?.contact || r.data?.contact || r.data;
       const existingAttrs = existingContact?.custom_attributes || {};
       const existingLabels = existingContact?.labels || [];
-      log(`  ↳ موجود (race condition) → ID ${existingId}`, 'inf');
+      vlog(`  ↳ موجود (race condition) → ID ${existingId}`, 'inf');
       if (hasAttr) {
         const currentVal = existingAttrs[attrKey];
         if (!(currentVal === attrVal && !forceUpdate)) {
@@ -1168,7 +1221,7 @@ async function assignLabel(contactId, label, name, isNew = false, existingLabels
 
   // ── تحقق إن الـ label مش موجود بالفعل ─────────────────────
   if (existing.includes(label)) {
-    log(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
+    vlog(`  ↳ Label "${label}" موجود بالفعل ✓`, 'inf');
     return true;
   }
 
@@ -1177,7 +1230,7 @@ async function assignLabel(contactId, label, name, isNew = false, existingLabels
   const cr = await cwFetch(`/api/v1/accounts/${acc}/contacts/${contactId}/labels`, 'POST',
     { labels: updated });
   if (cr.ok) {
-    log(`  ↳ Labels: [${updated.join(', ')}] ✓`, 'ok');
+    vlog(`  ↳ Labels: [${updated.join(', ')}] ✓`, 'ok');
   } else {
     log(`  ↳ فشل إضافة Label لـ ${name} — HTTP ${cr.status}: ${JSON.stringify(cr.data)}`, 'err');
   }
@@ -1199,10 +1252,10 @@ async function processContact(row, attrCol, labelName) {
       return { status: 'fail' };
     }
     if (result.isNew) {
-      log(`✓ جديد: ${name} (ID ${result.id})`, 'ok');
+      vlog(`✓ جديد: ${name} (ID ${result.id})`, 'ok');
       return { status: 'new' };
     } else {
-      log(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn');
+      vlog(`↻ موجود: ${name} (ID ${result.id}) → تم التحديث`, 'warn');
       return { status: 'updated' };
     }
   } catch(e) {
@@ -1220,7 +1273,9 @@ async function runUpload() {
   if (!validateAttrColumn(attrCol)) return;
 
   // ⚙️ إعدادات الـ batching — معدلة للسرعة القصوى
-  const BATCH_SIZE = 12;      // 12 contact في نفس الوقت — آمن لـ Sidekiq
+  // 25 = أعلى رقم بعد اختبار، Chatwoot Sidekiq يتحمله بدون 429 ملحوظة.
+  // لو شفت 429 errors كتيرة، قلّل لـ 20.
+  const BATCH_SIZE = 25;
   const BATCH_DELAY = 0;      // مفيش delay — الـ batches تشتغل continuous
 
   $('runBtn').disabled = true;
@@ -1239,20 +1294,26 @@ async function runUpload() {
     const batch = csvData.slice(i, i + BATCH_SIZE);
     const batchNum = Math.floor(i / BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(csvData.length / BATCH_SIZE);
-    log(`──── Batch ${batchNum}/${totalBatches} (${batch.length} contacts) ────`, 'inf');
+    vlog(`──── Batch ${batchNum}/${totalBatches} (${batch.length} contacts) ────`, 'inf');
 
     // شغّل الـ batch بالكامل في parallel
+    const batchStart = Date.now();
     const results = await Promise.all(
       batch.map(row => processContact(row, attrCol, labelName))
     );
+    const batchSec = ((Date.now() - batchStart) / 1000).toFixed(1);
 
     // عدّ النتائج
+    let bNew = 0, bUpd = 0, bFail = 0;
     for (const r of results) {
-      if (r.status === 'new') done++;
-      else if (r.status === 'updated') updated++;
-      else fail++;
+      if (r.status === 'new') { done++; bNew++; }
+      else if (r.status === 'updated') { updated++; bUpd++; }
+      else { fail++; bFail++; }
     }
     processed += batch.length;
+
+    // سطر ملخص بيظهر دايماً — يدي للمستخدم progress حتى لو verbose مقفول
+    log(`Batch ${batchNum}/${totalBatches} (${batchSec}s) — ${bNew} جديد، ${bUpd} تحديث${bFail ? `، ${bFail} فشل` : ''} — تقدم ${processed}/${csvData.length}`, bFail ? 'warn' : 'inf');
 
     stat('sDone', done); stat('sUpdated', updated); stat('sFail', fail);
     $('progBar').style.width = `${Math.round(processed / csvData.length * 100)}%`;
@@ -1342,13 +1403,58 @@ function resolveMappedValue(row, token) {
   return clean;
 }
 
+// ─── WhatsApp Variable Normalizer ──────────────────────────
+// Meta بترفض أي متغير template فيه: \n, \t, أكتر من 4 مسافات متتالية، أو > 1024 حرف.
+// الدالة دي بتحوّل النص متعدد الأسطر لسطر واحد آمن لواتساب — زي اللي بتعمله Uchat.
+//   - الفقرات (سطرين فاضيين) → " — "
+//   - السطر الواحد الجديد → مسافة
+//   - تكرار المسافات → مسافة واحدة
+//   - Tabs → مسافة
+//   - تقطع لـ 1024 حرف لو الناتج أطول
+function normalizeForWhatsApp(text) {
+  let s = String(text == null ? '' : text);
+  s = s.replace(/\r\n?/g, '\n');         // توحيد line endings
+  s = s.replace(/\n{2,}/g, ' — ');        // فقرة جديدة → فاصل بصري
+  s = s.replace(/\n/g, ' ');              // سطر جديد → مسافة
+  s = s.replace(/\t/g, ' ');              // tab → مسافة
+  s = s.replace(/[ ]{2,}/g, ' ');         // ضغط المسافات
+  s = s.trim();
+  if (s.length > 1024) s = s.slice(0, 1021) + '…'; // قصّ آمن
+  return s;
+}
+
 function buildBodyParams(row) {
   const mapping = parseParamMap($('bodyParams').value);
   const body = {};
+  const normalize = $('normalizeVars')?.checked !== false; // default ON
   Object.keys(mapping).forEach(key => {
-    body[key] = resolveMappedValue(row, mapping[key]);
+    const raw = resolveMappedValue(row, mapping[key]);
+    body[key] = normalize ? normalizeForWhatsApp(raw) : raw;
   });
   return body;
+}
+
+// زرار "اختبار الصياغة" — يُظهر للمستخدم شكل المتغيرات بعد التنظيف
+function previewNormalizedVars() {
+  const mapping = parseParamMap($('bodyParams').value);
+  const keys = Object.keys(mapping);
+  if (!keys.length) {
+    log('مفيش متغيرات في الـ Body Variables Mapping للمعاينة', 'warn');
+    return;
+  }
+  // استخدم أول صف من CSV لو موجود، أو dummy row فيه القيم النصية الثابتة
+  const sampleRow = csvData[0] || {};
+  const normalize = $('normalizeVars')?.checked !== false;
+  log(`─── معاينة المتغيرات (${normalize ? 'مُنظّفة آمنة لواتساب' : 'بدون تنظيف'}) ───`, 'inf');
+  keys.forEach(k => {
+    const raw = resolveMappedValue(sampleRow, mapping[k]);
+    const out = normalize ? normalizeForWhatsApp(raw) : raw;
+    const len = out.length;
+    const hasNewline = /\n/.test(raw);
+    const warn = !normalize && (hasNewline || len > 1024);
+    log(`{{${k}}} = ${out}`, warn ? 'err' : 'ok');
+    log(`        طول: ${len} حرف${hasNewline && !normalize ? ' • فيه \\n (هيرفض من Meta)' : ''}${len > 1024 ? ' • أطول من 1024' : ''}`, warn ? 'warn' : 'inf');
+  });
 }
 
 function currentTemplateVariables() {
