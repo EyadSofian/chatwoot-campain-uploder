@@ -732,8 +732,9 @@ async function checkDeliveryStatus() {
         log(`✗ Conv #${convId} (${row.name || row.phone_number}) — فشل async: ${JSON.stringify(externalErr)}`, 'err');
         recordFailure(row, code, JSON.stringify(externalErr), false);
         // نحتفظ بها للـ retry التلقائي (إذا مش error دائم)
+        // msgId مهم: لازم نبعته للـ Chatwoot retry endpoint
         if (!isPermanentWhatsAppError(code)) {
-          asyncFailedTrack.push({ row, convId, code });
+          asyncFailedTrack.push({ row, convId, code, msgId: msg.id });
         }
         asyncFailed++;
       } else {
@@ -776,9 +777,32 @@ function hideRetryFailedBtn() {
   if (btn) btn.style.display = 'none';
 }
 
-// ─── Direct Retry to Known Conversation ───────────────────
-// يرسل التيمبلت مباشرة على محادثة موجودة بدون إعادة إنشاء Contact أو Label.
-// لا يمر على duplicateGuard لأن الرسالة الأصلية فشلت — مش إرسال جديد.
+// ─── Native Chatwoot Retry (الطريقة الصحيحة) ──────────────
+// نفس الـ endpoint اللي بيستخدمه Chatwoot UI لما تضغط زرار refresh
+// جنب الرسالة الفاشلة. ده endpoint مخصص بيـ retry نفس الرسالة بالـ ID
+// بتاعها — مش بيعمل رسالة جديدة. ده اللي بيخلي Meta تقبلها بدون 131026.
+//
+// Endpoint: POST /api/v1/accounts/:acc/conversations/:conv/messages/:msg/retry
+// Body: empty (content-length: 0)
+async function retryFailedMessageNative(convId, msgId) {
+  const acc = $('accId').value;
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${convId}/messages/${msgId}/retry`,
+    'POST',
+    null,  // مفيش body — Chatwoot UI نفسها بتبعت content-length: 0
+    1
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+  const extErr = r.data?.content_attributes?.external_error || r.data?.external_error;
+  if (r.data?.status === 'failed' || extErr) {
+    throw new Error(`فشل التسليم: ${JSON.stringify(extErr || r.data)}`);
+  }
+  return r.data?.id;
+}
+
+// ─── Fallback: Direct Retry to Known Conversation ────────
+// يستخدم بس لو msgId مش متوفر (لسبب ما). الطريقة دي بتعمل رسالة
+// جديدة وعرضة لـ 131026 من Meta (frequency capping).
 async function retryTemplateToConv(convId, row) {
   const acc = $('accId').value;
   const payload = buildTemplatePayload(row);
@@ -830,7 +854,7 @@ async function retryFailedMessages() {
   let retryOk = 0, retryFail = 0;
 
   for (let i = 0; i < toRetry.length; i++) {
-    const { row, convId, code } = toRetry[i];
+    const { row, convId, code, msgId } = toRetry[i];
 
     // 10 ثواني فاصلة قبل كل retry
     log(`  ⏳ انتظار 10 ثواني (${i + 1}/${toRetry.length})...`, 'inf');
@@ -838,8 +862,16 @@ async function retryFailedMessages() {
     await new Promise(r => setTimeout(r, 10000));
 
     try {
-      log(`  🔄 إعادة إرسال: ${row.name || row.phone_number} → Conv #${convId}`, 'inf');
-      await retryTemplateToConv(convId, row);
+      // ✅ نستخدم الطريقة الصحيحة: نفس endpoint بتاع Chatwoot UI
+      // (بـ retry للرسالة بنفس الـ ID، بدل ما نعمل رسالة جديدة)
+      if (msgId) {
+        log(`  🔄 إعادة إرسال (Native): ${row.name || row.phone_number} → Msg #${msgId} في Conv #${convId}`, 'inf');
+        await retryFailedMessageNative(convId, msgId);
+      } else {
+        // Fallback: لو لسبب ما مفيش msgId، نعمل رسالة جديدة (الطريقة القديمة)
+        log(`  🔄 إعادة إرسال (Fallback): ${row.name || row.phone_number} → Conv #${convId}`, 'warn');
+        await retryTemplateToConv(convId, row);
+      }
       log(`  ✓ وصلت — Conv #${convId}`, 'ok');
       retryOk++;
     } catch (e) {
