@@ -1286,7 +1286,12 @@ function parseParamMap(text) {
   let lastKey = null;
   String(text || '').split(/\r?\n/).forEach(line => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) return;
+    // سطر فاضي → نحتفظ بيه كـ blank line داخل قيمة المتغير (فاصل بين الفقرات)
+    if (!trimmed) {
+      if (lastKey) params[lastKey] += '\n';
+      return;
+    }
+    if (trimmed.startsWith('#')) return;
     const eq = trimmed.indexOf('=');
     if (eq === -1) {
       // سطر بدون = → continuation لقيمة المتغير السابق (يسمح بقيم متعددة الأسطر)
