@@ -440,6 +440,9 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <button class="primary" id="sendApiBtn" onclick="sendApiCampaign()" style="width:100%;margin-top:.5rem">
       إرسال/اختبار Template عبر Chatwoot API
     </button>
+    <button class="secondary" id="stopCampaignBtn" onclick="stopCampaign()" style="width:100%;margin-top:.4rem;display:none;background:#fef2f2;color:#dc2626;border-color:#fca5a5">
+      ⏹ وقف الكامبين
+    </button>
   </div>
 
   <!-- Stats -->
@@ -508,6 +511,7 @@ let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [
 // يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
 // يُستخدم بواسطة checkDeliveryStatus() لاكتشاف الفشل الـ async من WhatsApp
 let sentMsgTrack = [];
+let cancelCampaign = false; // يُضبط على true لإيقاف الكامبين بعد الرسالة الحالية
 // الرسائل اللي اكتشف checkDeliveryStatus إنها فشلت async —
 // يُستخدم بواسطة retryFailedMessages() لإعادة الإرسال لنفس المحادثات
 let asyncFailedTrack = [];
@@ -608,6 +612,26 @@ function showCheckDeliveryBtn() {
   const note = $('deliveryNote');
   if (btn) { btn.style.display = ''; btn.textContent = '🔍 فحص التسليم'; btn.disabled = false; }
   if (note) note.style.display = '';
+}
+
+// ─── Campaign Stop ─────────────────────────────────────────
+// الإيقاف مش فوري — الرسالة اللي بدأت هتكمل،
+// والإيقاف بيحصل قبل الرسالة الجاية مباشرةً (سلوك آمن).
+function stopCampaign() {
+  cancelCampaign = true;
+  const btn = $('stopCampaignBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ جاري الإيقاف بعد الرسالة الحالية...'; }
+  log('⏹ طلب إيقاف — الكامبين هيوقف بعد الرسالة الحالية', 'warn');
+}
+
+function showStopBtn() {
+  const btn = $('stopCampaignBtn');
+  if (btn) { btn.style.display = ''; btn.disabled = false; btn.textContent = '⏹ وقف الكامبين'; }
+}
+
+function hideStopBtn() {
+  const btn = $('stopCampaignBtn');
+  if (btn) btn.style.display = 'none';
 }
 
 function hideCheckDeliveryBtn() {
@@ -1968,17 +1992,24 @@ async function sendApiCampaign() {
   resetFailedRecords();
   sentMsgTrack = [];
   asyncFailedTrack = [];
+  cancelCampaign = false;
   hideCheckDeliveryBtn();
   hideRetryFailedBtn();
+  showStopBtn();
 
   for (let i = 0; i < rows.length; i++) {
+    // فحص طلب الإيقاف قبل كل رسالة جديدة
+    if (cancelCampaign) {
+      log(`⏹ تم إيقاف الكامبين — أُرسل ${sent} من أصل ${rows.length}`, 'warn');
+      break;
+    }
+
     const row = rows[i];
     try {
       log(`إرسال (${i + 1}/${rows.length}): ${row.name || row.phone_number}`, 'inf');
       const result = await sendTemplateForRowWithRetry(row, labelName, attrCol, campaignKey);
       if (result.status === 'sent') {
         sent++;
-        // نحتفظ بـ convId + msgId لفحص التسليم الـ async لاحقاً
         if (result.convId) sentMsgTrack.push({ row, convId: result.convId, msgId: result.msgId });
       } else if (result.status === 'skipped') skipped++;
       else errors++;
@@ -1989,19 +2020,20 @@ async function sendApiCampaign() {
       errors++;
     }
 
-    // delay بين كل رسالة والـ next (مش بعد آخر رسالة)
     if (i + 1 < rows.length) {
       await new Promise(r => setTimeout(r, SEND_DELAY));
     }
   }
 
-  log(`─── انتهى API Campaign: ${sent} sent, ${skipped} skipped, ${errors} errors ───`, errors ? 'warn' : 'ok');
+  const stopped = cancelCampaign;
+  cancelCampaign = false;
+  hideStopBtn();
+
+  log(`─── ${stopped ? 'أُوقف' : 'انتهى'} API Campaign: ${sent} sent, ${skipped} skipped, ${errors} errors ───`, (stopped || errors) ? 'warn' : 'ok');
   if (failedRecords.length) {
     log(`📋 ${failedRecords.length} رقم فشل الإرسال إليهم — اضغط "تحميل الأرقام الفاشلة"`, 'warn');
     showFailedDownloadBtn();
   }
-  // نظهر زرار فحص التسليم الـ async دائماً بعد أي إرسال حقيقي
-  // (الفشل الـ async ممكن يحصل حتى لو الإرسال الأولي نجح)
   if (sentMsgTrack.length) showCheckDeliveryBtn();
   $('sendApiBtn').disabled = false;
 }
