@@ -1283,14 +1283,19 @@ function safeKey(input) {
 
 function parseParamMap(text) {
   const params = {};
+  let lastKey = null;
   String(text || '').split(/\r?\n/).forEach(line => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) return;
     const eq = trimmed.indexOf('=');
-    if (eq === -1) return;
+    if (eq === -1) {
+      // سطر بدون = → continuation لقيمة المتغير السابق (يسمح بقيم متعددة الأسطر)
+      if (lastKey) params[lastKey] += '\n' + trimmed;
+      return;
+    }
     const key = normalizeTemplateVariableKey(trimmed.slice(0, eq));
     const value = trimmed.slice(eq + 1).trim();
-    if (key && value) params[key] = value;
+    if (key && value) { params[key] = value; lastKey = key; }
   });
   return params;
 }
