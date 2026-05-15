@@ -180,7 +180,11 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .agent-map-value{padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-map-arrow{text-align:center;color:var(--muted);font-weight:700}
 .agent-map-status{font-size:11px;line-height:1.55}
+.job-panel{display:grid;gap:8px}
+.job-status{font-size:12px;line-height:1.6;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.job-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 @media(max-width:520px){.assign-actions,.agent-map-row{grid-template-columns:1fr}.agent-map-arrow{display:none}}
+@media(max-width:520px){.job-actions{grid-template-columns:1fr}}
 @media(max-width:520px){.header{flex-wrap:wrap}.badge{margin-right:0}.theme-btn{flex:1}}
 </style>
 </head>
@@ -467,6 +471,37 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     </button>
   </div>
 
+  <!-- Background Jobs -->
+  <div class="card">
+    <div class="card-title">تشغيل آمن على السيرفر</div>
+    <div class="job-panel">
+      <div class="toggle-row">
+        <label>شغّل الرفع والإرسال كـ Background Job — يكمل حتى لو خرجت من تاب Chatwoot</label>
+        <label class="toggle">
+          <input type="checkbox" id="backgroundMode" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>Upload Batch الآمن</label>
+          <input id="uploadBatchSize" value="10" placeholder="10">
+        </div>
+        <div class="field">
+          <label>Delay بين batches (ms)</label>
+          <input id="uploadBatchDelayMs" value="500" placeholder="500">
+        </div>
+      </div>
+      <div class="job-status" id="jobStatusText">لا يوجد Job شغال حالياً.</div>
+      <div class="progress"><div class="progress-bar" id="jobProgBar"></div></div>
+      <div class="job-actions">
+        <button class="secondary" type="button" onclick="refreshLatestJob()">تحديث الحالة</button>
+        <button class="secondary" type="button" onclick="stopServerJob()">إيقاف Job</button>
+        <button class="secondary" id="serverFailedBtn" type="button" onclick="downloadServerFailedCSV()" style="display:none">تحميل فشل السيرفر</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Stats -->
   <div id="statsWrap" style="display:none">
     <div class="stats">
@@ -530,6 +565,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 <script>
 let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
 let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [], agentAssignments = {};
+let activeServerJobId = null, serverJobPollTimer = null, serverLogOffset = 0;
 // يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
 // يُستخدم بواسطة checkDeliveryStatus() لاكتشاف الفشل الـ async من WhatsApp
 let sentMsgTrack = [];
@@ -606,6 +642,201 @@ function downloadLog() {
   a.href = URL.createObjectURL(blob);
   a.download = `chatwoot-log-${Date.now()}.txt`;
   a.click();
+}
+
+function serverJobEnabled() {
+  return $('backgroundMode')?.checked !== false;
+}
+
+function collectServerJobSettings() {
+  return {
+    apiToken: $('apiToken')?.value || '',
+    accountId: $('accId')?.value || '2',
+    labelName: $('labelName')?.value.trim() || '',
+    attrCol: $('attrCol')?.value.trim() || '',
+    createNew: $('createNew')?.checked !== false,
+    forceUpdate: $('forceUpdate')?.checked || false,
+    uploadBatchSize: parseInt($('uploadBatchSize')?.value, 10) || 10,
+    uploadBatchDelayMs: parseInt($('uploadBatchDelayMs')?.value, 10) || 500,
+    inboxId: $('sendInboxId')?.value.trim() || '',
+    templateName: $('templateName')?.value.trim() || '',
+    templateLang: $('templateLang')?.value.trim() || 'ar',
+    templateCategory: $('templateCategory')?.value || 'MARKETING',
+    bodyParams: $('bodyParams')?.value || '',
+    messageContent: $('messageContent')?.value || '',
+    normalizeVars: $('normalizeVars')?.checked !== false,
+    headerMediaUrl: $('headerMediaUrl')?.value.trim() || '',
+    headerMediaType: $('headerMediaType')?.value || '',
+    sourceMode: $('sourceMode')?.value || 'phone',
+    sourceColumn: $('sourceColumn')?.value.trim() || '',
+    duplicateGuard: $('duplicateGuard')?.checked !== false,
+    sendRateLimit: parseInt($('sendRateLimit')?.value, 10) || 60,
+    autoAssign: $('autoAssign')?.checked || false,
+    assignmentMode: assignmentMode(),
+    assignmentTargetType: assignmentTargetType(),
+    assignmentValueColumn: assignmentValueColumn(),
+    fixedTargetId: $('fixedAgentSelect')?.value || '',
+    assignmentMap: { ...agentAssignments }
+  };
+}
+
+async function startServerJob(type) {
+  const rows = type === 'send' && $('testMode')?.checked ? csvData.slice(0, 2) : csvData;
+  if (!rows.length) { log('ارفع CSV الأول', 'err'); return; }
+  if (!$('labelName')?.value.trim()) { log('ادخل اسم الـ Label', 'err'); return; }
+  if (type === 'send') {
+    if (!$('sendInboxId')?.value.trim()) { log('ادخل WhatsApp Inbox ID', 'err'); return; }
+    if (!$('templateName')?.value.trim()) { log('ادخل Template Name', 'err'); return; }
+    if (!$('sendConfirm')?.checked) { log('فعّل تأكيد الإرسال الحقيقي الأول', 'err'); return; }
+    if (!assertTemplateMappings(rows)) return;
+    if (!await prepareAssignmentMap(rows)) return;
+  } else {
+    const attrCol = $('attrCol')?.value.trim();
+    if (!validateAttrColumn(attrCol)) return;
+  }
+
+  const endpoint = type === 'send' ? '/api/jobs/send' : '/api/jobs/upload';
+  const btn = type === 'send' ? $('sendApiBtn') : $('runBtn');
+  if (btn) btn.disabled = true;
+  $('statsWrap').style.display = 'block';
+  stat('sTotal', rows.length); stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+  $('progBar').style.width = '0%';
+  $('jobProgBar').style.width = '0%';
+  setJobStatus(`Starting ${type} job on server...`);
+  log(`─── بدء ${type === 'send' ? 'الإرسال' : 'الرفع'} كـ Background Job على السيرفر ───`, 'inf');
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows, settings: collectServerJobSettings() })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    activeServerJobId = data.job.id;
+    serverLogOffset = 0;
+    try { localStorage.setItem('lastCampaignServerJobId', activeServerJobId); } catch (_) {}
+    beginServerJobPolling(activeServerJobId);
+  } catch (err) {
+    log(`فشل بدء Job على السيرفر: ${err.message}`, 'err');
+    setJobStatus(`Start failed: ${err.message}`);
+    if (btn) btn.disabled = false;
+  }
+}
+
+function beginServerJobPolling(jobId) {
+  activeServerJobId = jobId;
+  if (serverJobPollTimer) clearInterval(serverJobPollTimer);
+  pollServerJob(jobId);
+  serverJobPollTimer = setInterval(() => pollServerJob(jobId), 2000);
+}
+
+async function pollServerJob(jobId = activeServerJobId) {
+  if (!jobId) return;
+  try {
+    const [jobRes, logRes] = await Promise.all([
+      fetch(`/api/jobs/${encodeURIComponent(jobId)}`),
+      fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?since=${serverLogOffset}`)
+    ]);
+    const jobData = await jobRes.json().catch(() => ({}));
+    const logData = await logRes.json().catch(() => ({}));
+    if (Array.isArray(logData.lines)) {
+      logData.lines.forEach(line => {
+        const item = parseServerLogLine(line);
+        log(`[server] ${item.message}`, serverLevelToClass(item.level));
+      });
+      serverLogOffset = logData.offset || serverLogOffset;
+    }
+    if (jobData.job) updateServerJobUI(jobData.job);
+  } catch (err) {
+    setJobStatus(`Polling error: ${err.message}`);
+  }
+}
+
+function parseServerLogLine(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return { level: parsed.level || 'info', message: parsed.message || line };
+  } catch {
+    return { level: 'info', message: line };
+  }
+}
+
+function serverLevelToClass(level) {
+  if (level === 'ok') return 'ok';
+  if (level === 'warn') return 'warn';
+  if (level === 'error') return 'err';
+  return 'inf';
+}
+
+function updateServerJobUI(job) {
+  const c = job.counters || {};
+  const primary = job.type === 'send' ? (c.sent || 0) : (c.new || 0);
+  const secondary = job.type === 'send' ? (c.skipped || 0) : (c.updated || 0);
+  const failed = job.type === 'send' ? (c.errors || 0) : (c.failed || 0);
+  const total = job.total || 0;
+  const processed = job.processed || 0;
+  stat('sTotal', total);
+  stat('sDone', primary);
+  stat('sUpdated', secondary);
+  stat('sFail', failed);
+  const pct = total ? Math.round(processed / total * 100) : 0;
+  $('progBar').style.width = `${pct}%`;
+  $('jobProgBar').style.width = `${pct}%`;
+  setJobStatus(`${job.type.toUpperCase()} • ${job.status} • ${processed}/${total} • sent/new: ${primary} • skipped/updated: ${secondary} • failed: ${failed}`);
+  const hasFailed = failed > 0 || (job.failedRecords || []).length > 0;
+  const failedBtn = $('serverFailedBtn');
+  if (failedBtn) failedBtn.style.display = hasFailed ? 'block' : 'none';
+
+  if (['completed', 'completed_with_errors', 'failed', 'stopped'].includes(job.status)) {
+    if (serverJobPollTimer) clearInterval(serverJobPollTimer);
+    serverJobPollTimer = null;
+    $('runBtn').disabled = false;
+    $('sendApiBtn').disabled = false;
+  }
+}
+
+function setJobStatus(text) {
+  const el = $('jobStatusText');
+  if (el) el.textContent = text;
+}
+
+async function refreshLatestJob() {
+  try {
+    const res = await fetch('/api/jobs/latest');
+    const data = await res.json();
+    if (!data.job) {
+      setJobStatus('لا يوجد Job محفوظ على السيرفر.');
+      return;
+    }
+    activeServerJobId = data.job.id;
+    serverLogOffset = 0;
+    beginServerJobPolling(activeServerJobId);
+  } catch (err) {
+    setJobStatus(`Refresh failed: ${err.message}`);
+  }
+}
+
+async function stopServerJob() {
+  if (!activeServerJobId) {
+    log('مفيش Server Job شغال', 'warn');
+    return;
+  }
+  try {
+    await fetch(`/api/jobs/${encodeURIComponent(activeServerJobId)}/stop`, { method: 'POST' });
+    log('تم طلب إيقاف الـ Server Job', 'warn');
+    pollServerJob(activeServerJobId);
+  } catch (err) {
+    log(`فشل إيقاف الـ Server Job: ${err.message}`, 'err');
+  }
+}
+
+function downloadServerFailedCSV() {
+  if (!activeServerJobId) {
+    log('مفيش Server Job لتحميل الفشل منه', 'warn');
+    return;
+  }
+  window.open(`/api/jobs/${encodeURIComponent(activeServerJobId)}/failed.csv`, '_blank');
 }
 
 // ─── Failed Numbers CSV Export ─────────────────────────────
@@ -2592,6 +2823,28 @@ async function assignConversationToCsvAgent(conversationId, row, attrCol) {
   log(`  ↳ ⚠️ فشل Assign للمحادثة — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'warn');
   return false;
 }
+
+const runUploadBrowser = runUpload;
+runUpload = async function() {
+  if (serverJobEnabled()) return startServerJob('upload');
+  return runUploadBrowser();
+};
+
+const sendApiCampaignBrowser = sendApiCampaign;
+sendApiCampaign = async function() {
+  if (serverJobEnabled() && !$('dryRun')?.checked) return startServerJob('send');
+  return sendApiCampaignBrowser();
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const lastJobId = localStorage.getItem('lastCampaignServerJobId');
+    if (lastJobId) beginServerJobPolling(lastJobId);
+    else refreshLatestJob();
+  } catch (_) {
+    refreshLatestJob();
+  }
+});
 </script>
 </body>
 </html>

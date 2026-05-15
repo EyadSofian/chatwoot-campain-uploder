@@ -3,6 +3,7 @@ import https from 'https';
 import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { registerJobRoutes } from './jobs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -16,6 +17,9 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+
+app.use('/api/jobs', express.json({ limit: '25mb' }));
+registerJobRoutes(app);
 
 app.use(express.static(join(__dirname, '../public')));
 
