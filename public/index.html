@@ -183,8 +183,17 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-panel{display:grid;gap:8px}
 .job-status{font-size:12px;line-height:1.6;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
 .job-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.jobs-list{display:grid;gap:8px;max-height:220px;overflow:auto}
+.job-row{display:grid;grid-template-columns:minmax(0,1.4fr) auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.job-row-main{min-width:0}
+.job-row-title{font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-row-meta{font-size:10.5px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-pill{font-size:10.5px;font-weight:700;border-radius:999px;padding:4px 8px;background:var(--surface-2);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+.job-pill.running{color:var(--brand);border-color:var(--brand-line);background:var(--brand-soft)}
+.job-pill.completed{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+.job-pill.failed,.job-pill.completed_with_errors{color:var(--err);border-color:var(--err);background:var(--err-soft)}
 @media(max-width:520px){.assign-actions,.agent-map-row{grid-template-columns:1fr}.agent-map-arrow{display:none}}
-@media(max-width:520px){.job-actions{grid-template-columns:1fr}}
+@media(max-width:520px){.job-actions,.job-row{grid-template-columns:1fr}}
 @media(max-width:520px){.header{flex-wrap:wrap}.badge{margin-right:0}.theme-btn{flex:1}}
 </style>
 </head>
@@ -484,21 +493,33 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       </div>
       <div class="row">
         <div class="field">
+          <label>اسم المشغّل / السيلز</label>
+          <input id="operatorName" placeholder="مثال: Ahmed Ibrahim">
+        </div>
+        <div class="field">
           <label>Upload Batch الآمن</label>
           <input id="uploadBatchSize" value="10" placeholder="10">
         </div>
+      </div>
+      <div class="row">
         <div class="field">
           <label>Delay بين batches (ms)</label>
           <input id="uploadBatchDelayMs" value="500" placeholder="500">
+        </div>
+        <div class="field">
+          <label>طريقة الطابور</label>
+          <input value="نفس Inbox بالترتيب — Inboxes مختلفة بالتوازي" readonly>
         </div>
       </div>
       <div class="job-status" id="jobStatusText">لا يوجد Job شغال حالياً.</div>
       <div class="progress"><div class="progress-bar" id="jobProgBar"></div></div>
       <div class="job-actions">
         <button class="secondary" type="button" onclick="refreshLatestJob()">تحديث الحالة</button>
+        <button class="secondary" type="button" onclick="refreshJobsList()">كل الـ Jobs</button>
         <button class="secondary" type="button" onclick="stopServerJob()">إيقاف Job</button>
         <button class="secondary" id="serverFailedBtn" type="button" onclick="downloadServerFailedCSV()" style="display:none">تحميل فشل السيرفر</button>
       </div>
+      <div class="jobs-list" id="jobsList"></div>
     </div>
   </div>
 
@@ -648,11 +669,43 @@ function serverJobEnabled() {
   return $('backgroundMode')?.checked !== false;
 }
 
+function normalizeLabelTitleClient(input) {
+  return String(input || '')
+    .trim()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+}
+
+function getOperatorName() {
+  const el = $('operatorName');
+  const value = String(el?.value || '').trim();
+  if (value) {
+    try { localStorage.setItem('campaignOperatorName', value); } catch (_) {}
+  }
+  return value;
+}
+
+function restoreOperatorName() {
+  try {
+    const saved = localStorage.getItem('campaignOperatorName');
+    if (saved && $('operatorName')) $('operatorName').value = saved;
+  } catch (_) {}
+}
+
 function collectServerJobSettings() {
+  const rawLabelName = $('labelName')?.value.trim() || '';
+  const safeLabelName = normalizeLabelTitleClient(rawLabelName);
+  if (rawLabelName && rawLabelName !== safeLabelName) {
+    log(`اسم الـ Label اتنضف تلقائياً: "${rawLabelName}" → "${safeLabelName}"`, 'warn');
+  }
   return {
     apiToken: $('apiToken')?.value || '',
     accountId: $('accId')?.value || '2',
-    labelName: $('labelName')?.value.trim() || '',
+    labelName: safeLabelName,
+    operatorName: getOperatorName(),
     attrCol: $('attrCol')?.value.trim() || '',
     createNew: $('createNew')?.checked !== false,
     forceUpdate: $('forceUpdate')?.checked || false,
@@ -717,6 +770,7 @@ async function startServerJob(type) {
     serverLogOffset = 0;
     try { localStorage.setItem('lastCampaignServerJobId', activeServerJobId); } catch (_) {}
     beginServerJobPolling(activeServerJobId);
+    refreshJobsList();
   } catch (err) {
     log(`فشل بدء Job على السيرفر: ${err.message}`, 'err');
     setJobStatus(`Start failed: ${err.message}`);
@@ -793,6 +847,7 @@ function updateServerJobUI(job) {
     serverJobPollTimer = null;
     $('runBtn').disabled = false;
     $('sendApiBtn').disabled = false;
+    refreshJobsList();
   }
 }
 
@@ -815,6 +870,71 @@ async function refreshLatestJob() {
   } catch (err) {
     setJobStatus(`Refresh failed: ${err.message}`);
   }
+}
+
+async function refreshJobsList() {
+  const holder = $('jobsList');
+  if (!holder) return;
+  holder.innerHTML = '<div class="job-status">جاري تحميل الـ Jobs...</div>';
+  try {
+    const res = await fetch('/api/jobs');
+    const data = await res.json();
+    const jobs = Array.isArray(data.jobs) ? data.jobs.slice(0, 20) : [];
+    if (!jobs.length) {
+      holder.innerHTML = '<div class="job-status">لا يوجد Jobs محفوظة.</div>';
+      return;
+    }
+    holder.innerHTML = jobs.map(renderJobRow).join('');
+  } catch (err) {
+    holder.innerHTML = `<div class="job-status">فشل تحميل الـ Jobs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderJobRow(job) {
+  const c = job.counters || {};
+  const done = job.type === 'send' ? (c.sent || 0) : (c.new || 0) + (c.updated || 0);
+  const failed = job.type === 'send' ? (c.errors || 0) : (c.failed || 0);
+  const title = `${job.type === 'send' ? 'Send' : 'Upload'} • ${job.settings?.labelName || '-'} • ${job.queueLabel || '-'}`;
+  const meta = [
+    job.operatorName ? `by ${job.operatorName}` : 'بدون اسم مشغّل',
+    `${job.processed || 0}/${job.total || 0}`,
+    `done ${done}`,
+    failed ? `failed ${failed}` : '',
+    formatJobTime(job.createdAt),
+  ].filter(Boolean).join(' • ');
+  return `
+    <div class="job-row">
+      <div class="job-row-main">
+        <div class="job-row-title">${escapeHtml(title)}</div>
+        <div class="job-row-meta">${escapeHtml(meta)}</div>
+      </div>
+      <span class="job-pill ${escapeHtml(job.status || '')}">${escapeHtml(job.status || 'unknown')}</span>
+      <button class="secondary" type="button" onclick="followServerJob('${escapeHtml(job.id)}')">متابعة</button>
+    </div>`;
+}
+
+function followServerJob(jobId) {
+  if (!jobId) return;
+  activeServerJobId = jobId;
+  serverLogOffset = 0;
+  try { localStorage.setItem('lastCampaignServerJobId', jobId); } catch (_) {}
+  beginServerJobPolling(jobId);
+}
+
+function formatJobTime(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 async function stopServerJob() {
@@ -2837,6 +2957,7 @@ sendApiCampaign = async function() {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  restoreOperatorName();
   try {
     const lastJobId = localStorage.getItem('lastCampaignServerJobId');
     if (lastJobId) beginServerJobPolling(lastJobId);
@@ -2844,6 +2965,7 @@ document.addEventListener('DOMContentLoaded', () => {
   } catch (_) {
     refreshLatestJob();
   }
+  refreshJobsList();
 });
 </script>
 </body>

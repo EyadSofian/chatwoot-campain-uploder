@@ -14,7 +14,9 @@ const PERMANENT_WA_ERRORS = new Set([
 const RETRYABLE_WA_ERRORS = new Set([131026]);
 
 const activeJobs = new Map();
-let workerQueue = Promise.resolve();
+const queueChains = new Map();
+const maxParallelQueues = clampInt(process.env.MAX_PARALLEL_JOB_QUEUES || 3, 1, 8);
+const globalQueueLimiter = createLimiter(maxParallelQueues);
 
 export function registerJobRoutes(app) {
   app.use('/api/jobs', async (_req, res, next) => {
@@ -115,6 +117,8 @@ async function createJob(type, body = {}) {
     err.status = 400;
     throw err;
   }
+  const settings = normalizeSettings(body.settings || {});
+  const queueInfo = getQueueInfo(type, settings, config);
 
   const job = {
     id: randomUUID(),
@@ -132,6 +136,9 @@ async function createJob(type, body = {}) {
       skipped: 0,
       errors: 0,
     },
+    queueKey: queueInfo.key,
+    queueLabel: queueInfo.label,
+    operatorName: settings.operatorName,
     settings: sanitizeSettings(body.settings || {}),
     stopRequested: false,
     lastError: '',
@@ -141,13 +148,12 @@ async function createJob(type, body = {}) {
 
   await writeJob(job);
   await clearJobFiles(job.id);
-  await logJob(job, `Job queued: ${type} (${rows.length} rows)`, 'info');
+  await logJob(job, `Job queued: ${type} (${rows.length} rows) — ${queueInfo.label}`, 'info');
+  if (settings.operatorName) await logJob(job, `Operator: ${settings.operatorName}`, 'info');
 
-  const runtime = { config, rows, settings: normalizeSettings(body.settings || {}), stopRequested: false };
+  const runtime = { config, rows, settings, stopRequested: false, queueKey: queueInfo.key };
   activeJobs.set(job.id, runtime);
-  workerQueue = workerQueue
-    .then(() => runJob(job.id))
-    .catch((err) => console.error('[jobs] worker queue error:', err));
+  enqueueJob(job.id, queueInfo.key);
 
   return { publicJob: job };
 }
@@ -161,6 +167,7 @@ async function runJob(jobId) {
   job.startedAt = new Date().toISOString();
   job.updatedAt = job.startedAt;
   await writeJob(job);
+  await logJob(job, `Job started in ${job.queueLabel || runtime.queueKey || 'default queue'}; max parallel queues=${maxParallelQueues}`, 'info');
 
   try {
     if (job.type === 'upload') await runUploadJob(job, runtime);
@@ -284,7 +291,8 @@ function buildConfig(settings) {
 
 function normalizeSettings(settings) {
   return {
-    labelName: String(settings.labelName || '').trim(),
+    labelName: normalizeLabelTitle(settings.labelName || ''),
+    originalLabelName: String(settings.labelName || '').trim(),
     attrCol: String(settings.attrCol || '').trim(),
     createNew: settings.createNew !== false,
     forceUpdate: Boolean(settings.forceUpdate),
@@ -309,6 +317,7 @@ function normalizeSettings(settings) {
     assignmentValueColumn: String(settings.assignmentValueColumn || settings.attrCol || '').trim(),
     fixedTargetId: String(settings.fixedTargetId || '').trim(),
     assignmentMap: settings.assignmentMap && typeof settings.assignmentMap === 'object' ? settings.assignmentMap : {},
+    operatorName: String(settings.operatorName || '').trim().slice(0, 80),
   };
 }
 
@@ -369,6 +378,7 @@ function retryDelay(attempt, status) {
 }
 
 async function ensureLabel(job, config, label) {
+  if (!label) throw new Error('Label name is empty after sanitizing');
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/labels`, 'GET');
   const labels = r.ok ? (r.data.payload || []) : [];
   if (labels.find((item) => item.title === label)) {
@@ -812,6 +822,54 @@ function describeWhatsAppError(code) {
   return `WhatsApp error ${code}`;
 }
 
+function enqueueJob(jobId, queueKey) {
+  const current = queueChains.get(queueKey) || Promise.resolve();
+  const next = current
+    .then(() => globalQueueLimiter(() => runJob(jobId)))
+    .catch((err) => console.error('[jobs] queue error:', err))
+    .finally(() => {
+      if (queueChains.get(queueKey) === next) queueChains.delete(queueKey);
+    });
+  queueChains.set(queueKey, next);
+}
+
+function createLimiter(max) {
+  let active = 0;
+  const waiting = [];
+
+  function drain() {
+    if (active >= max) return;
+    const next = waiting.shift();
+    if (next) next();
+  }
+
+  return async function limit(fn) {
+    if (active >= max) {
+      await new Promise((resolve) => waiting.push(resolve));
+    }
+    active++;
+    try {
+      return await fn();
+    } finally {
+      active--;
+      drain();
+    }
+  };
+}
+
+function getQueueInfo(type, settings, config) {
+  if (settings.inboxId) {
+    return {
+      key: `account:${config.accountId}:inbox:${settings.inboxId}`,
+      label: `Inbox #${settings.inboxId}`,
+    };
+  }
+  return {
+    key: `account:${config.accountId}:contacts`,
+    label: type === 'upload' ? `Contacts queue / Account #${config.accountId}` : `Account #${config.accountId}`,
+  };
+}
+
 function incrementUploadCounter(job, status) {
   if (status === 'new') job.counters.new++;
   else if (status === 'updated') job.counters.updated++;
@@ -842,6 +900,22 @@ function safeKey(input) {
   let hash = 0;
   for (let i = 0; i < raw.length; i++) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
   return `key_${Math.abs(hash)}`;
+}
+
+function normalizeLabelTitle(input) {
+  const raw = String(input || '').trim();
+  return raw
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+}
+
+function clampInt(value, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed)) return min;
+  return Math.max(min, Math.min(parsed, max));
 }
 
 function escapeRegExp(value) {
