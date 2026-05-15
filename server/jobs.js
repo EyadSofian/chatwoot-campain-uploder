@@ -80,6 +80,22 @@ export function registerJobRoutes(app) {
     res.json({ ok: true, job });
   });
 
+  app.post('/api/jobs/:id/check-delivery', async (req, res) => {
+    try {
+      const job = await readJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (job.type !== 'send') return res.status(400).json({ error: 'Only send jobs can be checked' });
+      const config = buildConfig(req.body?.settings || {});
+      if (!config.token) return res.status(400).json({ error: 'Chatwoot API token is required' });
+      const result = await checkJobDelivery(job, config);
+      await writeFailedCsv(job);
+      await writeJob(job);
+      res.json({ ok: true, result, job });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/jobs/upload', async (req, res) => {
     try {
       const created = await createJob('upload', req.body);
@@ -645,6 +661,62 @@ async function assignConversation(job, runtime, conversationId, row) {
     return false;
   }
   return true;
+}
+
+async function checkJobDelivery(job, config) {
+  const sent = Array.isArray(job.sentTrack) ? job.sentTrack : [];
+  if (!sent.length) {
+    return { checked: 0, confirmed: 0, failed: 0 };
+  }
+  await logJob(job, `Delivery check started for ${sent.length} sent messages`, 'info');
+  let checked = 0;
+  let confirmed = 0;
+  let failed = 0;
+
+  for (const item of sent) {
+    checked++;
+    const row = item.row || {};
+    try {
+      const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${item.convId}/messages`, 'GET', undefined, 2);
+      if (!r.ok) {
+        await logJob(job, `Delivery check failed for conversation #${item.convId}: HTTP ${r.status}`, 'warn');
+        continue;
+      }
+      const messages = r.data?.payload || [];
+      const msg = item.msgId
+        ? messages.find((message) => Number(message.id) === Number(item.msgId))
+        : [...messages].reverse().find((message) => message.message_type === 1);
+      if (!msg) {
+        await logJob(job, `Delivery message not found in conversation #${item.convId}`, 'warn');
+        continue;
+      }
+      if (msg.status === 'failed') {
+        const externalErr = msg.content_attributes?.external_error || msg.external_error || msg.message_status_error || msg;
+        const code = extractWhatsAppErrorCode(JSON.stringify(externalErr));
+        if (!job.failedRecords.some((record) => String(record.phone) === String(row.phone_number || '') && String(record.raw_error).includes(String(item.msgId || item.convId)))) {
+          recordFailure(job, row, code, `async delivery failed msg=${item.msgId || ''} conv=${item.convId}: ${JSON.stringify(externalErr)}`, false);
+        }
+        failed++;
+        await logJob(job, `Async delivery failed: ${row.name || row.phone_number || item.convId} — ${JSON.stringify(externalErr)}`, 'error');
+      } else {
+        confirmed++;
+      }
+    } catch (err) {
+      await logJob(job, `Delivery check error for conversation #${item.convId}: ${err.message}`, 'warn');
+    }
+    if (checked < sent.length) await sleep(200);
+  }
+
+  job.deliveryCheck = {
+    checked,
+    confirmed,
+    failed,
+    checkedAt: new Date().toISOString(),
+  };
+  if (failed) job.status = job.status === 'completed' ? 'completed_with_errors' : job.status;
+  job.updatedAt = new Date().toISOString();
+  await logJob(job, `Delivery check finished: ${confirmed} confirmed, ${failed} failed`, failed ? 'warn' : 'ok');
+  return job.deliveryCheck;
 }
 
 function resolveAssignmentTarget(row, settings) {

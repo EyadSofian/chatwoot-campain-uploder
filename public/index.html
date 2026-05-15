@@ -541,7 +541,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <button class="secondary" id="downloadFailedBtn" onclick="downloadFailedCSV()" style="display:none">
       📋 تحميل الأرقام الفاشلة
     </button>
-    <button class="secondary" id="checkDeliveryBtn" onclick="checkDeliveryStatus()" style="display:none">
+    <button class="secondary" id="checkDeliveryBtn" onclick="checkCurrentDeliveryStatus()" style="display:none">
       🔍 فحص التسليم
     </button>
     <button class="secondary" id="retryFailedBtn" onclick="retryFailedMessages()" style="display:none">
@@ -841,6 +841,9 @@ function updateServerJobUI(job) {
   const hasFailed = failed > 0 || (job.failedRecords || []).length > 0;
   const failedBtn = $('serverFailedBtn');
   if (failedBtn) failedBtn.style.display = hasFailed ? 'block' : 'none';
+  if (job.type === 'send' && ['completed', 'completed_with_errors'].includes(job.status) && (job.sentTrack || []).length) {
+    showCheckDeliveryBtn();
+  }
 
   if (['completed', 'completed_with_errors', 'failed', 'stopped'].includes(job.status)) {
     if (serverJobPollTimer) clearInterval(serverJobPollTimer);
@@ -1033,6 +1036,51 @@ function hideCheckDeliveryBtn() {
   const note = $('deliveryNote');
   if (btn) btn.style.display = 'none';
   if (note) note.style.display = 'none';
+}
+
+async function checkCurrentDeliveryStatus() {
+  if (sentMsgTrack.length) return checkDeliveryStatus();
+  if (activeServerJobId) return checkServerDeliveryStatus();
+  log('مفيش رسائل محتاج تتفحص — شغّل كامبين الأول', 'warn');
+}
+
+async function checkServerDeliveryStatus() {
+  if (!activeServerJobId) {
+    log('مفيش Server Job محدد للفحص', 'warn');
+    return;
+  }
+  const btn = $('checkDeliveryBtn');
+  if (btn) btn.disabled = true;
+  log('⏳ انتظار ٣٠ ثانية قبل فحص حالة رسائل الـ Server Job...', 'warn');
+  for (let i = 30; i > 0; i--) {
+    if (btn) btn.textContent = `🔍 فحص التسليم (${i}s)`;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  if (btn) btn.textContent = '🔍 جاري الفحص...';
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(activeServerJobId)}/check-delivery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: collectServerJobSettings() })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const result = data.result || {};
+    log(`─── نتيجة فحص السيرفر: ${result.confirmed || 0} وصلت فعلاً، ${result.failed || 0} فشل async ───`, result.failed ? 'warn' : 'ok');
+    if (result.failed) {
+      showFailedDownloadBtn();
+      const failedBtn = $('serverFailedBtn');
+      if (failedBtn) failedBtn.style.display = 'block';
+      log('📋 اضغط "تحميل فشل السيرفر" لتصدير الأرقام الفاشلة', 'warn');
+    }
+    if (data.job) updateServerJobUI(data.job);
+    if (btn) btn.textContent = `✓ تم الفحص (${result.confirmed || 0} ✓ / ${result.failed || 0} ✗)`;
+  } catch (err) {
+    log(`فشل فحص تسليم السيرفر: ${err.message}`, 'err');
+    if (btn) btn.textContent = '🔍 فحص التسليم';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ─── Post-Campaign Async Delivery Check ───────────────────────
