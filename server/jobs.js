@@ -761,7 +761,7 @@ async function retryJobDeliveryFailures(job, config) {
 
   const sentTotal = Array.isArray(job.sentTrack) ? job.sentTrack.length : 0;
   const failureRate = sentTotal ? failures.length / sentTotal : 0;
-  if (failureRate > 0.7) {
+  if (failureRate > 0.9) {
     const err = new Error(`Failure rate is too high (${Math.round(failureRate * 100)}%). Review template/inbox before retrying.`);
     err.status = 409;
     throw err;

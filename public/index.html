@@ -1245,11 +1245,11 @@ async function retryFailedMessages() {
   const btn = $('retryFailedBtn');
   btn.disabled = true;
 
-  // حماية: لو نسبة الفشل فوق 70% — موقف ولا تجرب تاني
-  // (فوق 70% غالباً مشكلة في الـ Template أو الـ Inbox مش مجرد throttling)
+  // حماية: لو نسبة الفشل فوق 90% — موقف ولا تجرب تاني
+  // (فوق 90% غالباً مشكلة في الـ Template أو الـ Inbox مش مجرد throttling)
   const failureRate = asyncFailedTrack.length / sentMsgTrack.length;
-  if (failureRate > 0.7) {
-    log(`⛔ نسبة الفشل ${Math.round(failureRate * 100)}% — فوق 70%، غالباً مشكلة في الـ Template أو الـ Inbox`, 'err');
+  if (failureRate > 0.9) {
+    log(`⛔ نسبة الفشل ${Math.round(failureRate * 100)}% — فوق 90%، غالباً مشكلة في الـ Template أو الـ Inbox`, 'err');
     log(`  راجع الـ Template والـ Inbox قبل إعادة الإرسال — إعادة الإرسال مع فشل عالي تضر بتقييم الرقم`, 'warn');
     btn.textContent = '⛔ نسبة فشل عالية — راجع الـ Template';
     return;
