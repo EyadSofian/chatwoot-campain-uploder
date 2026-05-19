@@ -968,6 +968,11 @@ function downloadServerFailedCSV() {
 // ويوقف إرسال نفس الرسالة لنفس الرقم تاني (حماية لتقييم الرقم).
 function downloadFailedCSV() {
   if (!failedRecords.length) {
+    if (activeServerJobId) {
+      log('مفيش فشل محلي في المتصفح — هنحمل ملف فشل الـ Server Job', 'warn');
+      downloadServerFailedCSV();
+      return;
+    }
     log('مفيش أرقام فاشلة للتحميل', 'inf');
     return;
   }
@@ -1072,6 +1077,10 @@ async function checkServerDeliveryStatus() {
       const failedBtn = $('serverFailedBtn');
       if (failedBtn) failedBtn.style.display = 'block';
       log('📋 اضغط "تحميل فشل السيرفر" لتصدير الأرقام الفاشلة', 'warn');
+      if (result.retryable) {
+        showRetryFailedBtn(result.retryable);
+        log(`🔄 ${result.retryable} رسالة قابلة لإعادة الإرسال من السيرفر`, 'warn');
+      }
     }
     if (data.job) updateServerJobUI(data.job);
     if (btn) btn.textContent = `✓ تم الفحص (${result.confirmed || 0} ✓ / ${result.failed || 0} ✗)`;
@@ -1162,11 +1171,11 @@ async function checkDeliveryStatus() {
   btn.disabled = false;
 }
 
-function showRetryFailedBtn() {
+function showRetryFailedBtn(count = asyncFailedTrack.length) {
   const btn = $('retryFailedBtn');
   if (btn) {
     btn.style.display = '';
-    btn.textContent = `🔄 إعادة إرسال الفاشلة (${asyncFailedTrack.length})`;
+    btn.textContent = `🔄 إعادة إرسال الفاشلة (${count})`;
     btn.disabled = false;
   }
 }
@@ -1228,6 +1237,7 @@ async function retryTemplateToConv(convId, row) {
 //   - الأخطاء الدائمة (PERMANENT) تُستبعد تلقائياً من checkDeliveryStatus
 async function retryFailedMessages() {
   if (!asyncFailedTrack.length) {
+    if (activeServerJobId) return retryServerFailedMessages();
     log('مفيش رسائل فاشلة قابلة لإعادة الإرسال', 'warn');
     return;
   }
@@ -1290,6 +1300,48 @@ async function retryFailedMessages() {
 
   btn.textContent = `✓ إعادة الإرسال (${retryOk} ✓ / ${retryFail} ✗)`;
   btn.disabled = false;
+}
+
+async function retryServerFailedMessages() {
+  if (!activeServerJobId) {
+    log('مفيش Server Job محدد لإعادة الإرسال', 'warn');
+    return;
+  }
+  const btn = $('retryFailedBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '🔄 جاري إعادة إرسال فشل السيرفر...';
+  }
+  log('─── إعادة إرسال الرسائل الفاشلة من Server Job (مرة واحدة فقط) ───', 'warn');
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(activeServerJobId)}/retry-failed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: collectServerJobSettings() })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const result = data.result || {};
+    log(`─── انتهت إعادة إرسال السيرفر: ${result.success || 0} نجح، ${result.failed || 0} فشل ───`, result.failed ? 'warn' : 'ok');
+    if (data.job) updateServerJobUI(data.job);
+    if (result.failed) {
+      showFailedDownloadBtn();
+      const failedBtn = $('serverFailedBtn');
+      if (failedBtn) failedBtn.style.display = 'block';
+      if (btn) {
+        btn.textContent = `🔄 إعادة إرسال الفاشلة (${result.failed})`;
+        btn.disabled = false;
+      }
+    } else {
+      hideRetryFailedBtn();
+    }
+  } catch (err) {
+    log(`فشل إعادة إرسال فشل السيرفر: ${err.message}`, 'err');
+    if (btn) {
+      btn.textContent = '🔄 إعادة إرسال الفاشلة';
+      btn.disabled = false;
+    }
+  }
 }
 
 function clearFile(e) {

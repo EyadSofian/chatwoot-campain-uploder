@@ -59,7 +59,17 @@ export function registerJobRoutes(app) {
   app.get('/api/jobs/:id/failed.csv', async (req, res) => {
     const filePath = getJobFailedPath(req.params.id);
     try {
-      await fs.access(filePath);
+      try {
+        await fs.access(filePath);
+      } catch {
+        const job = await readJob(req.params.id);
+        if (job?.failedRecords?.length) {
+          await writeFailedCsv(job);
+          await fs.access(filePath);
+        } else {
+          throw new Error('No failed CSV for this job');
+        }
+      }
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="failed-${req.params.id}.csv"`);
       createReadStream(filePath).pipe(res);
@@ -88,6 +98,22 @@ export function registerJobRoutes(app) {
       const config = buildConfig(req.body?.settings || {});
       if (!config.token) return res.status(400).json({ error: 'Chatwoot API token is required' });
       const result = await checkJobDelivery(job, config);
+      await writeFailedCsv(job);
+      await writeJob(job);
+      res.json({ ok: true, result, job });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/jobs/:id/retry-failed', async (req, res) => {
+    try {
+      const job = await readJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (job.type !== 'send') return res.status(400).json({ error: 'Only send jobs can retry failed messages' });
+      const config = buildConfig(req.body?.settings || {});
+      if (!config.token) return res.status(400).json({ error: 'Chatwoot API token is required' });
+      const result = await retryJobDeliveryFailures(job, config);
       await writeFailedCsv(job);
       await writeJob(job);
       res.json({ ok: true, result, job });
@@ -672,6 +698,7 @@ async function checkJobDelivery(job, config) {
   let checked = 0;
   let confirmed = 0;
   let failed = 0;
+  job.deliveryFailures = [];
 
   for (const item of sent) {
     checked++;
@@ -696,6 +723,14 @@ async function checkJobDelivery(job, config) {
         if (!job.failedRecords.some((record) => String(record.phone) === String(row.phone_number || '') && String(record.raw_error).includes(String(item.msgId || item.convId)))) {
           recordFailure(job, row, code, `async delivery failed msg=${item.msgId || ''} conv=${item.convId}: ${JSON.stringify(externalErr)}`, false);
         }
+        if (!PERMANENT_WA_ERRORS.has(code) && item.msgId) {
+          job.deliveryFailures.push({
+            row,
+            convId: item.convId,
+            msgId: item.msgId,
+            code,
+          });
+        }
         failed++;
         await logJob(job, `Async delivery failed: ${row.name || row.phone_number || item.convId} — ${JSON.stringify(externalErr)}`, 'error');
       } else {
@@ -712,11 +747,65 @@ async function checkJobDelivery(job, config) {
     confirmed,
     failed,
     checkedAt: new Date().toISOString(),
+    retryable: job.deliveryFailures.length,
   };
   if (failed) job.status = job.status === 'completed' ? 'completed_with_errors' : job.status;
   job.updatedAt = new Date().toISOString();
   await logJob(job, `Delivery check finished: ${confirmed} confirmed, ${failed} failed`, failed ? 'warn' : 'ok');
   return job.deliveryCheck;
+}
+
+async function retryJobDeliveryFailures(job, config) {
+  const failures = Array.isArray(job.deliveryFailures) ? job.deliveryFailures : [];
+  if (!failures.length) return { retried: 0, success: 0, failed: 0 };
+
+  const sentTotal = Array.isArray(job.sentTrack) ? job.sentTrack.length : 0;
+  const failureRate = sentTotal ? failures.length / sentTotal : 0;
+  if (failureRate > 0.7) {
+    const err = new Error(`Failure rate is too high (${Math.round(failureRate * 100)}%). Review template/inbox before retrying.`);
+    err.status = 409;
+    throw err;
+  }
+
+  await logJob(job, `Retry failed delivery started for ${failures.length} messages`, 'warn');
+  const remaining = [];
+  let success = 0;
+  let failed = 0;
+
+  for (let i = 0; i < failures.length; i++) {
+    const item = failures[i];
+    const row = item.row || {};
+    if (i > 0) await sleep(10000);
+    try {
+      const r = await cwFetch(
+        job,
+        config,
+        `/api/v1/accounts/${config.accountId}/conversations/${item.convId}/messages/${item.msgId}/retry`,
+        'POST',
+        undefined,
+        2
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status} ${JSON.stringify(r.data)}`);
+      success++;
+      await logJob(job, `Retry sent: ${row.name || row.phone_number || item.convId} — message #${item.msgId}`, 'ok');
+    } catch (err) {
+      failed++;
+      remaining.push(item);
+      recordFailure(job, row, item.code, `retry failed msg=${item.msgId} conv=${item.convId}: ${err.message}`, true);
+      await logJob(job, `Retry failed: ${row.name || row.phone_number || item.convId} — ${err.message}`, 'error');
+    }
+  }
+
+  job.deliveryFailures = remaining;
+  job.lastRetry = {
+    retried: failures.length,
+    success,
+    failed,
+    retriedAt: new Date().toISOString(),
+  };
+  job.updatedAt = new Date().toISOString();
+  await logJob(job, `Retry finished: ${success} success, ${failed} failed`, failed ? 'warn' : 'ok');
+  return job.lastRetry;
 }
 
 function resolveAssignmentTarget(row, settings) {
