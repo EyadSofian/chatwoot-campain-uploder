@@ -432,6 +432,15 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <div id="agentMap" class="agent-map"></div>
       </div>
     </div>
+    <div class="field">
+      <label>حالة المحادثة بعد إرسال التيمبلت</label>
+      <select id="postSendConversationStatus">
+        <option value="open" selected>Open — تظهر للموظف للمتابعة</option>
+        <option value="pending">Pending — تفضل في انتظار البوت/السيستم</option>
+        <option value="resolved">Resolved — تتقفل بعد الإرسال وتفتح لو العميل رد</option>
+      </select>
+      <div class="hint">الحالة تتغير بعد نجاح إرسال التيمبلت فقط. لو الرسالة فشلت، الأبب لا يغير حالة المحادثة.</div>
+    </div>
     <div class="toggle-row">
       <label>Dry Run — معاينة فقط بدون أي إنشاء أو إرسال</label>
       <label class="toggle">
@@ -722,6 +731,7 @@ function collectServerJobSettings() {
     headerMediaType: $('headerMediaType')?.value || '',
     sourceMode: $('sourceMode')?.value || 'phone',
     sourceColumn: $('sourceColumn')?.value.trim() || '',
+    postSendConversationStatus: selectedConversationStatus(),
     duplicateGuard: $('duplicateGuard')?.checked !== false,
     sendRateLimit: parseInt($('sendRateLimit')?.value, 10) || 60,
     autoAssign: $('autoAssign')?.checked || false,
@@ -2070,6 +2080,36 @@ function conversationSortTime(conversation) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function selectedConversationStatus() {
+  const value = $('postSendConversationStatus')?.value || 'open';
+  return ['open', 'pending', 'resolved'].includes(value) ? value : 'open';
+}
+
+async function applyPostSendConversationStatus(conversationId, currentStatus = '') {
+  const acc = $('accId').value;
+  const status = selectedConversationStatus();
+  if (!conversationId || !status) return true;
+  if (String(currentStatus || '').toLowerCase() === status) {
+    log(`  ↳ حالة المحادثة بالفعل ${status}`, 'inf');
+    return true;
+  }
+
+  const r = await cwFetch(
+    `/api/v1/accounts/${acc}/conversations/${conversationId}/toggle_status`,
+    'POST',
+    { status },
+    2
+  );
+
+  if (r.ok) {
+    log(`  ↳ تم تغيير حالة المحادثة إلى ${status}`, 'ok');
+    return true;
+  }
+
+  log(`  ↳ ⚠️ فشل تغيير حالة المحادثة إلى ${status} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'warn');
+  return false;
+}
+
 async function getConversationDetails(conversationId) {
   const acc = $('accId').value;
   const r = await cwFetch(`/api/v1/accounts/${acc}/conversations/${conversationId}`, 'GET');
@@ -2510,6 +2550,7 @@ async function sendTemplateForRow(row, labelName, attrCol, campaignKey) {
   await markCampaignSent(conv.id, attrs, campaignKey, labelName, templateName);
   log(`  ↳ Template اتبعت واتسجلت في Conv #${conv.id}`, 'ok');
   await assignConversationToCsvAgent(conv.id, row, attrCol);
+  await applyPostSendConversationStatus(conv.id, details?.status || conv.status);
   // نرجع convId و msgId عشان checkDeliveryStatus تقدر تراجع الحالة الـ async بعدين
   return { status: 'sent', convId: conv.id, msgId: r.data?.id };
 }

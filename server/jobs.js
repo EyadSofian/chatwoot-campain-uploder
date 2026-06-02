@@ -351,6 +351,7 @@ function normalizeSettings(settings) {
     headerMediaType: String(settings.headerMediaType || '').trim(),
     sourceMode: String(settings.sourceMode || 'phone'),
     sourceColumn: String(settings.sourceColumn || '').trim(),
+    postSendConversationStatus: normalizeConversationStatus(settings.postSendConversationStatus),
     duplicateGuard: settings.duplicateGuard !== false,
     sendRateLimit: Number(settings.sendRateLimit || 60),
     autoAssign: Boolean(settings.autoAssign),
@@ -361,6 +362,11 @@ function normalizeSettings(settings) {
     assignmentMap: settings.assignmentMap && typeof settings.assignmentMap === 'object' ? settings.assignmentMap : {},
     operatorName: String(settings.operatorName || '').trim().slice(0, 80),
   };
+}
+
+function normalizeConversationStatus(value) {
+  const status = String(value || 'open').trim().toLowerCase();
+  return ['open', 'pending', 'resolved'].includes(status) ? status : 'open';
 }
 
 function sanitizeSettings(settings) {
@@ -589,6 +595,7 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
 
   await markCampaignSent(job, config, conv.id, attrs, campaignKey, settings.labelName, settings.templateName);
   await assignConversation(job, runtime, conv.id, row);
+  await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
   await logJob(job, `Template sent and recorded in conversation #${conv.id}`, 'ok');
   return { status: 'sent', convId: conv.id, msgId: r.data?.id };
 }
@@ -668,6 +675,33 @@ async function markCampaignSent(job, config, conversationId, attrs, campaignKey,
   await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
     custom_attributes: merged,
   });
+}
+
+async function applyPostSendConversationStatus(job, runtime, conversationId, currentStatus = '') {
+  const { config, settings } = runtime;
+  const status = settings.postSendConversationStatus || 'open';
+  if (!conversationId || !status) return true;
+  if (String(currentStatus || '').toLowerCase() === status) {
+    await logJob(job, `Conversation #${conversationId} already ${status}`, 'info');
+    return true;
+  }
+
+  const r = await cwFetch(
+    job,
+    config,
+    `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/toggle_status`,
+    'POST',
+    { status },
+    2
+  );
+
+  if (r.ok) {
+    await logJob(job, `Conversation #${conversationId} status set to ${status}`, 'ok');
+    return true;
+  }
+
+  await logJob(job, `Conversation status change failed for #${conversationId}: HTTP ${r.status} ${JSON.stringify(r.data)}`, 'warn');
+  return false;
 }
 
 async function assignConversation(job, runtime, conversationId, row) {
