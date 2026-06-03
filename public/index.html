@@ -1540,6 +1540,20 @@ function normPhone(p) {
   return (p || '').replace(/[^\d]/g, '');
 }
 
+function normalizePhoneForChatwoot(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const compact = raw.replace(/[\s()-]/g, '');
+  const digits = normPhone(compact);
+  if (!digits) return '';
+  if (compact.startsWith('+')) return `+${digits}`;
+  if (compact.startsWith('00') && digits.length > 2) return `+${digits.slice(2)}`;
+  if (digits.startsWith('0')) {
+    throw new Error(`رقم الهاتف "${value}" لازم يكون بكود الدولة، مثال +966... أو +20...`);
+  }
+  return `+${digits}`;
+}
+
 function hasUnsafePhoneFormat(p) {
   return /e[+-]|\./i.test(String(p || ''));
 }
@@ -1602,7 +1616,7 @@ async function upsertContact(row, attrKey) {
   if (hasUnsafePhoneFormat(row.phone_number)) {
     throw new Error(`رقم الهاتف "${row.phone_number}" بصيغة Excel علمية/غير آمنة. افتح CSV في Notepad وصحح الرقم قبل الرفع.`);
   }
-  const phone   = row.phone_number?.replace(/\s/g, '');
+  const phone   = normalizePhoneForChatwoot(row.phone_number);
   const name    = row.name || phone;
   const attrVal = attrKey ? row[attrKey] : null;
   const hasAttr = !!(attrKey && attrVal);

@@ -467,7 +467,7 @@ async function processContact(job, runtime, row) {
 async function upsertContact(job, runtime, row, attrKey) {
   const { config, settings } = runtime;
   if (hasUnsafePhoneFormat(row.phone_number)) throw new Error(`Unsafe phone format: ${row.phone_number}`);
-  const phone = String(row.phone_number || '').replace(/\s/g, '');
+  const phone = normalizePhoneForChatwoot(row.phone_number);
   if (!phone) throw new Error('phone_number is required');
   const name = row.name || phone;
   const attrVal = attrKey ? row[attrKey] : null;
@@ -1090,6 +1090,20 @@ function incrementUploadCounter(job, status) {
 
 function normPhone(value) {
   return String(value || '').replace(/[^\d]/g, '');
+}
+
+function normalizePhoneForChatwoot(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const compact = raw.replace(/[\s()-]/g, '');
+  const digits = normPhone(compact);
+  if (!digits) return '';
+  if (compact.startsWith('+')) return `+${digits}`;
+  if (compact.startsWith('00') && digits.length > 2) return `+${digits.slice(2)}`;
+  if (digits.startsWith('0')) {
+    throw new Error(`phone_number "${value}" must include country code, e.g. +966... or +20...`);
+  }
+  return `+${digits}`;
 }
 
 function hasUnsafePhoneFormat(value) {
