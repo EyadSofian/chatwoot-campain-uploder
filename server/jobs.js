@@ -260,13 +260,18 @@ async function runUploadJob(job, runtime) {
     await logJob(job, `Batch ${batchNo}/${totalBatches}: ${batch.length} contacts`, 'info');
 
     const results = await Promise.allSettled(batch.map((row) => processContact(job, runtime, row)));
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
+      const row = batch[index] || {};
+      const name = row.name || row.phone_number || `row ${i + index + 1}`;
       job.processed++;
       if (result.status === 'fulfilled') {
         incrementUploadCounter(job, result.value.status);
       } else {
+        const message = result.reason?.message || 'Unknown upload error';
+        const code = extractHttpStatusCode(message) || extractWhatsAppErrorCode(message);
         job.counters.failed++;
-        recordFailure(job, {}, '', result.reason?.message || 'Unknown upload error', false);
+        recordFailure(job, row, code, message, false);
+        await logJob(job, `Upload failed: ${name} — ${message}`, 'error');
       }
     }
     job.updatedAt = new Date().toISOString();
@@ -997,16 +1002,28 @@ function extractWhatsAppErrorCode(errorMsg) {
   return null;
 }
 
+function extractHttpStatusCode(errorMsg) {
+  const match = String(errorMsg || '').match(/\bHTTP\s+(\d{3})\b/i);
+  return match ? `HTTP ${match[1]}` : '';
+}
+
 function recordFailure(job, row, code, rawMessage, retryAttempted) {
   job.failedRecords.push({
     phone: row.phone_number || '',
     name: row.name || '',
     error_code: code || '',
-    error_description: describeWhatsAppError(code),
+    error_description: describeFailureCode(code),
     timestamp: new Date().toISOString(),
     retry_attempted: retryAttempted ? 'yes' : 'no',
     raw_error: rawMessage || '',
   });
+}
+
+function describeFailureCode(code) {
+  const value = String(code || '');
+  if (!value) return 'unknown';
+  if (value.startsWith('HTTP ')) return `Chatwoot API error ${value.slice(5)}`;
+  return describeWhatsAppError(Number(code) || code);
 }
 
 function describeWhatsAppError(code) {
