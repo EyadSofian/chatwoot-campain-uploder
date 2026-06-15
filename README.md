@@ -28,9 +28,19 @@ Optional:
 
 ```bash
 PORT=3000
+CAMPAIGN_MARKER_TTL_SECONDS=2592000
+CAMPAIGN_PENDING_MARKER_TTL_SECONDS=3600
 ```
 
 Railway usually provides `PORT` automatically, so only add `PORT` if you need to force a local value.
+
+`CAMPAIGN_MARKER_TTL_SECONDS` defaults to 30 days. Use the same value in
+Chatwoot Actions. Before any template is sent, the uploader verifies a
+`pending` campaign marker on the conversation. This prevents Department and
+Reopen automation from taking over a fast customer reply. Successful sends are
+marked `sent`; failed sends expire their marker immediately. A `pending` marker
+expires after one hour by default, so an interrupted job cannot block normal
+routing for the full campaign window.
 
 ## Safe Sending Flow
 

@@ -2,6 +2,11 @@ import { randomUUID } from 'crypto';
 import { createReadStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
+import {
+  buildCampaignMarkerAttributes,
+  getCampaignMarkerTtlSeconds,
+  getCampaignPendingMarkerTtlSeconds
+} from './campaignMarkers.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -579,7 +584,16 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
   if (!result) throw new Error('Contact was not found/created');
   await assignLabel(job, config, result.id, settings.labelName, row.name || row.phone_number, result.isNew, result.existingLabels);
 
-  const conv = await ensureCampaignConversation(job, runtime, result.id, row);
+  const markerTtlSeconds = getCampaignMarkerTtlSeconds(settings.campaignMarkerTtlSeconds);
+  const pendingMarkerTtlSeconds = getCampaignPendingMarkerTtlSeconds(settings.campaignPendingMarkerTtlSeconds);
+  const marker = {
+    campaignKey,
+    labelName: settings.labelName,
+    templateName: settings.templateName,
+    ttlSeconds: markerTtlSeconds,
+    pendingTtlSeconds: pendingMarkerTtlSeconds
+  };
+  const conv = await ensureCampaignConversation(job, runtime, result.id, row, marker);
   const details = await getConversationDetails(job, config, conv.id);
   const attrs = details?.custom_attributes || conv.custom_attributes || {};
 
@@ -589,23 +603,54 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     return { status: 'skipped', convId: conv.id };
   }
 
-  const payload = buildTemplatePayload(row, settings);
-  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conv.id}/messages`, 'POST', payload, 3);
-  if (!r.ok) throw new Error(`Template send failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  let markerAttrs = await updateCampaignMarker(job, config, conv.id, {
+    attrs,
+    ...marker,
+    status: 'pending',
+  });
 
-  const externalError = r.data?.content_attributes?.external_error || r.data?.external_error || r.data?.message_status_error;
-  if (r.data?.status === 'failed' || externalError) {
-    throw new Error(`Delivery failed: ${JSON.stringify(externalError || r.data)}`);
+  const payload = buildTemplatePayload(row, settings);
+  let r;
+  try {
+    r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conv.id}/messages`, 'POST', payload, 3);
+    if (!r.ok) throw new Error(`Template send failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+
+    const externalError = r.data?.content_attributes?.external_error || r.data?.external_error || r.data?.message_status_error;
+    if (r.data?.status === 'failed' || externalError) {
+      throw new Error(`Delivery failed: ${JSON.stringify(externalError || r.data)}`);
+    }
+  } catch (error) {
+    try {
+      await updateCampaignMarker(job, config, conv.id, {
+        attrs,
+        ...marker,
+        status: 'failed',
+        error: error.message
+      });
+    } catch (markerError) {
+      await logJob(job, `Campaign failure marker could not be saved for conversation #${conv.id}: ${markerError.message}`, 'warn');
+    }
+    throw error;
   }
 
-  await markCampaignSent(job, config, conv.id, attrs, campaignKey, settings.labelName, settings.templateName);
+  try {
+    markerAttrs = await updateCampaignMarker(job, config, conv.id, {
+      attrs: markerAttrs,
+      ...marker,
+      status: 'sent',
+    });
+  } catch (error) {
+    // The verified pending marker is already active, so the reply remains
+    // protected even if the final "sent" update fails.
+    await logJob(job, `Template sent but final campaign marker failed for conversation #${conv.id}: ${error.message}`, 'warn');
+  }
   await assignConversation(job, runtime, conv.id, row);
   await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
   await logJob(job, `Template sent and recorded in conversation #${conv.id}`, 'ok');
   return { status: 'sent', convId: conv.id, msgId: r.data?.id };
 }
 
-async function ensureCampaignConversation(job, runtime, contactId, row) {
+async function ensureCampaignConversation(job, runtime, contactId, row, marker) {
   const { config, settings } = runtime;
   const convs = await getContactConversations(job, config, contactId);
   const sameInbox = convs
@@ -619,10 +664,10 @@ async function ensureCampaignConversation(job, runtime, contactId, row) {
     inbox_id: Number(settings.inboxId),
     contact_id: contactId,
     status: 'open',
-    custom_attributes: {
-      api_campaign_label: settings.labelName,
-      api_campaign_created_at: new Date().toISOString(),
-    },
+    custom_attributes: buildCampaignMarkerAttributes({
+      ...marker,
+      status: 'pending'
+    }),
   });
   if (!r.ok) throw new Error(`Conversation create failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
   const conv = r.data.payload || r.data;
@@ -670,16 +715,15 @@ async function getConversationDetails(job, config, conversationId) {
   return r.ok ? (r.data.payload || r.data) : null;
 }
 
-async function markCampaignSent(job, config, conversationId, attrs, campaignKey, labelName, templateName) {
-  const merged = {
-    ...(attrs || {}),
-    [campaignKey]: new Date().toISOString(),
-    last_api_campaign_label: labelName,
-    last_api_template: templateName,
-  };
-  await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
-    custom_attributes: merged,
+async function updateCampaignMarker(job, config, conversationId, marker) {
+  const merged = buildCampaignMarkerAttributes(marker);
+  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
+    custom_attributes: merged
   });
+  if (!r.ok) {
+    throw new Error(`Campaign marker failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+  return r.data?.custom_attributes || r.data?.payload?.custom_attributes || merged;
 }
 
 async function applyPostSendConversationStatus(job, runtime, conversationId, currentStatus = '') {
