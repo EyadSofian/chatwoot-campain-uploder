@@ -1463,6 +1463,25 @@ async function cwFetch(path, method, body, retries = 2) {
   }
 }
 
+async function serverCwFetch(path, method = 'GET', body, retries = 2) {
+  const url = getBase() + '/api/chatwoot' + path;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (res.status === 429 && attempt < retries) {
+      const wait = 2000 * (attempt + 1);
+      log(`  ⏳ Server token rate limit (429) — انتظار ${wait/1000}s ثم إعادة المحاولة`, 'warn');
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data: json };
+  }
+}
+
 async function testConnection() {
   const acc = $('accId').value;
   const el = $('testResult');
@@ -1470,7 +1489,7 @@ async function testConnection() {
   el.textContent = 'جاري الاتصال...';
   el.style.display = 'block';
   try {
-    const r = await cwFetch(`/api/v1/accounts/${acc}/labels`, 'GET');
+    const r = await serverCwFetch(`/accounts/${acc}/labels`, 'GET');
     if (r.ok) {
       el.className = 'test-result ok';
       el.textContent = `✓ الاتصال ناجح — ${r.data.payload?.length || 0} Label موجود`;
@@ -2251,7 +2270,7 @@ async function syncInboxes() {
   const select = $('inboxSelect');
   select.innerHTML = '<option value="">جاري التحميل...</option>';
 
-  const r = await cwFetch(`/api/v1/accounts/${acc}/inboxes`, 'GET');
+  const r = await serverCwFetch(`/accounts/${acc}/inboxes`, 'GET');
   if (!r.ok) {
     select.innerHTML = '<option value="">فشل جلب الـ inboxes</option>';
     log(`فشل Sync Inboxes — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
@@ -2300,13 +2319,13 @@ async function loadInboxTemplates(forceProviderSync = false) {
   }
 
   if (forceProviderSync) {
-    const sr = await cwFetch(`/api/v1/accounts/${acc}/inboxes/${inboxId}/sync_templates`, 'POST', {});
+    const sr = await serverCwFetch(`/accounts/${acc}/inboxes/${inboxId}/sync_templates`, 'POST', {});
     if (sr.ok) log('تم طلب Sync Templates من Meta/Provider', 'ok');
     else log(`Sync Templates رجع HTTP ${sr.status}: ${JSON.stringify(sr.data)} — هنحاول نقرأ الموجود حالياً`, 'warn');
   }
 
   select.innerHTML = '<option value="">جاري تحميل التيمبلتات...</option>';
-  const r = await cwFetch(`/api/v1/accounts/${acc}/inboxes/${inboxId}`, 'GET');
+  const r = await serverCwFetch(`/accounts/${acc}/inboxes/${inboxId}`, 'GET');
   if (!r.ok) {
     select.innerHTML = '<option value="">فشل تحميل التيمبلتات</option>';
     log(`فشل قراءة Inbox #${inboxId} — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
@@ -3003,7 +3022,7 @@ async function syncInboxAgents() {
     log('اختار WhatsApp Inbox الأول قبل Sync Agents', 'err');
     return false;
   }
-  const r = await cwFetch(`/api/v1/accounts/${acc}/inbox_members/${inboxId}`, 'GET');
+  const r = await serverCwFetch(`/accounts/${acc}/inbox_members/${inboxId}`, 'GET');
   if (!r.ok) {
     log(`فشل Sync Agents — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
     return false;
@@ -3019,7 +3038,7 @@ async function syncInboxAgents() {
 
 async function syncTeams() {
   const acc = $('accId').value;
-  const r = await cwFetch(`/api/v1/accounts/${acc}/teams`, 'GET');
+  const r = await serverCwFetch(`/accounts/${acc}/teams`, 'GET');
   if (!r.ok) {
     log(`فشل Sync Teams — HTTP ${r.status}: ${JSON.stringify(r.data)}`, 'err');
     return false;

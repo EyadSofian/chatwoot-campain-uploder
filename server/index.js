@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CHATWOOT_URL = (process.env.CHATWOOT_URL || 'https://chat.engosoft.com').replace(/\/$/, '');
+const CHATWOOT_API_TOKEN = (process.env.CHATWOOT_API_TOKEN || '').trim();
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -20,6 +21,55 @@ app.use((req, res, next) => {
 
 app.use('/api/jobs', express.json({ limit: '25mb' }));
 registerJobRoutes(app);
+
+app.use('/api/chatwoot', express.json({ limit: '1mb' }));
+
+const SAFE_SERVER_CHATWOOT_ROUTES = [
+  { method: 'GET', pattern: /^\/accounts\/\d+\/labels$/ },
+  { method: 'GET', pattern: /^\/accounts\/\d+\/inboxes$/ },
+  { method: 'GET', pattern: /^\/accounts\/\d+\/inboxes\/\d+$/ },
+  { method: 'POST', pattern: /^\/accounts\/\d+\/inboxes\/\d+\/sync_templates$/ },
+  { method: 'GET', pattern: /^\/accounts\/\d+\/inbox_members\/\d+$/ },
+  { method: 'GET', pattern: /^\/accounts\/\d+\/teams$/ }
+];
+
+function isSafeServerChatwootRoute(method, pathName) {
+  return SAFE_SERVER_CHATWOOT_ROUTES.some((route) => (
+    route.method === method.toUpperCase() && route.pattern.test(pathName)
+  ));
+}
+
+app.all('/api/chatwoot/*', async (req, res) => {
+  try {
+    const pathName = `/${req.params[0] || ''}`;
+    if (!isSafeServerChatwootRoute(req.method, pathName)) {
+      return res.status(404).json({ error: 'Unsupported Chatwoot server route' });
+    }
+    if (!CHATWOOT_API_TOKEN) {
+      return res.status(500).json({ error: 'CHATWOOT_API_TOKEN is not configured on the server' });
+    }
+
+    const chatwootRes = await fetch(`${CHATWOOT_URL}/api/v1${pathName}`, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        api_access_token: CHATWOOT_API_TOKEN
+      },
+      body: ['GET', 'HEAD'].includes(req.method.toUpperCase()) ? undefined : JSON.stringify(req.body || {})
+    });
+    const text = await chatwootRes.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { message: text };
+    }
+    res.status(chatwootRes.status).json(data);
+  } catch (err) {
+    console.error('Server Chatwoot API error:', err.message);
+    res.status(502).json({ error: 'Server Chatwoot API error', message: err.message });
+  }
+});
 
 app.use(express.static(join(__dirname, '../public')));
 
