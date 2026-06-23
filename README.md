@@ -8,6 +8,7 @@ Dashboard app for Chatwoot self-hosted that can:
 - Sync WhatsApp inboxes from Chatwoot.
 - Sync WhatsApp templates through Chatwoot.
 - Send WhatsApp template campaigns through Chatwoot API in safe test mode, so the campaign message appears in the conversation.
+- Defer assignment until the customer replies, then distribute replies round-robin across a selected Chatwoot team.
 
 ## Railway
 
@@ -22,6 +23,7 @@ Required environment variable:
 
 ```bash
 CHATWOOT_URL=https://chat.engosoft.com
+CHATWOOT_API_TOKEN=your_admin_or_agent_access_token
 ```
 
 Optional:
@@ -30,6 +32,7 @@ Optional:
 PORT=3000
 CAMPAIGN_MARKER_TTL_SECONDS=2592000
 CAMPAIGN_PENDING_MARKER_TTL_SECONDS=3600
+WEBHOOK_SECRET=choose-a-random-secret
 ```
 
 Railway usually provides `PORT` automatically, so only add `PORT` if you need to force a local value.
@@ -41,6 +44,39 @@ Reopen automation from taking over a fast customer reply. Successful sends are
 marked `sent`; failed sends expire their marker immediately. A `pending` marker
 expires after one hour by default, so an interrupted job cannot block normal
 routing for the full campaign window.
+
+`WEBHOOK_SECRET` is optional but recommended. If it is set, add the same value
+to the Chatwoot webhook URL as `?token=...`.
+
+## Reply-Based Team Assignment
+
+Use this when you want the broadcast to stay unassigned until the customer
+replies.
+
+1. In the assignment panel, enable automatic assignment.
+2. Choose `Team` as the target.
+3. Choose `وزّع على أعضاء Team عند رد العميل`.
+4. Click `Sync Teams`.
+5. Pick the team that should receive the replies.
+6. Send the campaign as a background job.
+
+When the customer replies, Chatwoot sends a webhook to the app. The app checks
+the campaign marker on the conversation and assigns it to the next confirmed
+member of the selected team using round-robin distribution.
+
+Add this webhook in Chatwoot:
+
+```text
+Settings → Integrations → Webhooks → Add new webhook
+URL: https://YOUR-APP-DOMAIN/api/webhooks/chatwoot
+Event: message_created
+```
+
+If `WEBHOOK_SECRET` is set:
+
+```text
+URL: https://YOUR-APP-DOMAIN/api/webhooks/chatwoot?token=YOUR_SECRET
+```
 
 ## Safe Sending Flow
 

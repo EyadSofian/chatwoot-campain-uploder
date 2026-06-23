@@ -4,6 +4,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { registerJobRoutes } from './jobs.js';
+import { registerReplyRouter } from './replyRouter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -14,13 +15,16 @@ const CHATWOOT_API_TOKEN = (process.env.CHATWOOT_API_TOKEN || '').trim();
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,api_access_token,Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,api_access_token,Authorization,x-webhook-secret');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
 app.use('/api/jobs', express.json({ limit: '25mb' }));
 registerJobRoutes(app);
+
+app.use('/api/webhooks', express.json({ limit: '2mb' }));
+registerReplyRouter(app);
 
 app.use('/api/chatwoot', express.json({ limit: '1mb' }));
 
@@ -30,7 +34,8 @@ const SAFE_SERVER_CHATWOOT_ROUTES = [
   { method: 'GET', pattern: /^\/accounts\/\d+\/inboxes\/\d+$/ },
   { method: 'POST', pattern: /^\/accounts\/\d+\/inboxes\/\d+\/sync_templates$/ },
   { method: 'GET', pattern: /^\/accounts\/\d+\/inbox_members\/\d+$/ },
-  { method: 'GET', pattern: /^\/accounts\/\d+\/teams$/ }
+  { method: 'GET', pattern: /^\/accounts\/\d+\/teams$/ },
+  { method: 'GET', pattern: /^\/accounts\/\d+\/teams\/\d+\/team_members$/ }
 ];
 
 function isSafeServerChatwootRoute(method, pathName) {

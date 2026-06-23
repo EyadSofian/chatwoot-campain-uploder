@@ -24,7 +24,8 @@ export function buildCampaignMarkerAttributes({
   now = new Date(),
   ttlSeconds = getCampaignMarkerTtlSeconds(),
   pendingTtlSeconds = getCampaignPendingMarkerTtlSeconds(),
-  error = ""
+  error = "",
+  replyAssignment = null
 }) {
   const markedAt = now.toISOString();
   const activeTtlSeconds = status === "pending" ? pendingTtlSeconds : ttlSeconds;
@@ -49,6 +50,28 @@ export function buildCampaignMarkerAttributes({
   if (status === "sent" && campaignKey) merged[campaignKey] = markedAt;
   if (status === "failed" && error) merged.api_campaign_last_error = String(error).slice(0, 500);
   else delete merged.api_campaign_last_error;
+
+  if (replyAssignment?.mode === "on_reply_team") {
+    merged.api_campaign_reply_assign_mode = "on_reply_team";
+    merged.api_campaign_reply_team_id = String(replyAssignment.teamId || "");
+    merged.api_campaign_reply_team_name = String(replyAssignment.teamName || "");
+    merged.api_campaign_reply_inbox_id = String(replyAssignment.inboxId || "");
+    merged.api_campaign_reply_assignment_key = String(replyAssignment.assignmentKey || "");
+    merged.api_campaign_reply_pending = status !== "failed";
+    delete merged.api_campaign_reply_assigned_at;
+    delete merged.api_campaign_reply_assignee_id;
+    delete merged.api_campaign_reply_assignee_name;
+  } else {
+    delete merged.api_campaign_reply_assign_mode;
+    delete merged.api_campaign_reply_team_id;
+    delete merged.api_campaign_reply_team_name;
+    delete merged.api_campaign_reply_inbox_id;
+    delete merged.api_campaign_reply_assignment_key;
+    delete merged.api_campaign_reply_assigned_at;
+    delete merged.api_campaign_reply_assignee_id;
+    delete merged.api_campaign_reply_assignee_name;
+    merged.api_campaign_reply_pending = false;
+  }
 
   return merged;
 }

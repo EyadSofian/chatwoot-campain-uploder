@@ -407,6 +407,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
             <select id="assignMode" onchange="toggleAssignmentPanel()">
               <option value="by_csv">حسب قيمة في CSV</option>
               <option value="fixed_agent">نفس الاختيار لكل الحملة</option>
+              <option value="on_reply_team">وزّع على أعضاء Team عند رد العميل</option>
             </select>
           </div>
         </div>
@@ -739,6 +740,7 @@ function collectServerJobSettings() {
     assignmentTargetType: assignmentTargetType(),
     assignmentValueColumn: assignmentValueColumn(),
     fixedTargetId: $('fixedAgentSelect')?.value || '',
+    fixedTargetName: selectedFixedTargetName(),
     assignmentMap: { ...agentAssignments }
   };
 }
@@ -2822,6 +2824,12 @@ function assignmentTargetName(target) {
       || `${assignmentTargetLabel()} #${target.id || '-'}`;
 }
 
+function selectedFixedTargetName() {
+  const targetId = $('fixedAgentSelect')?.value || '';
+  const target = currentAssignmentTargets().find(item => String(item.id) === String(targetId));
+  return target ? assignmentTargetName(target) : '';
+}
+
 function assignmentValueColumn() {
   return $('assignValueColumn')?.value.trim() || $('attrCol')?.value.trim() || '';
 }
@@ -2893,23 +2901,32 @@ function toggleAssignmentPanel() {
   const enabled = $('autoAssign').checked;
   if (body) body.style.display = enabled ? 'block' : 'none';
 
-  const byCsv = assignmentMode() === 'by_csv';
+  const mode = assignmentMode();
+  const replyTeam = mode === 'on_reply_team';
+  if (replyTeam && $('assignTargetType')) $('assignTargetType').value = 'team';
+  if ($('assignTargetType')) $('assignTargetType').disabled = replyTeam;
+
+  const byCsv = mode === 'by_csv';
   const fixedWrap = $('fixedAgentWrap');
   const csvColumnWrap = $('csvTargetColumnWrap');
   const mapWrap = $('agentMap');
   const help = $('assignHelp');
   const fixedTargetLabel = $('fixedTargetLabel');
 
-  if (fixedWrap) fixedWrap.style.display = enabled && !byCsv ? 'block' : 'none';
+  if (fixedWrap) fixedWrap.style.display = enabled && (!byCsv || replyTeam) ? 'block' : 'none';
   if (csvColumnWrap) csvColumnWrap.style.display = enabled && byCsv ? 'block' : 'none';
   if (mapWrap) mapWrap.style.display = enabled && byCsv ? 'grid' : 'none';
   if (fixedTargetLabel) {
-    fixedTargetLabel.textContent = assignmentTargetType() === 'team'
+    fixedTargetLabel.textContent = replyTeam
+      ? 'التيم الذي سيتم التوزيع على أعضائه عند رد العميل'
+      : assignmentTargetType() === 'team'
       ? 'التيم المسؤول عن كل الحملة'
       : 'الموظف المسؤول عن كل الحملة';
   }
   if (help) {
-    help.textContent = byCsv
+    help.textContent = replyTeam
+      ? 'الحملة هتتبعت بدون تعيين موظف. أول ما العميل يرد، السيرفر يوزع المحادثة بالتساوي على أعضاء التيم المختار.'
+      : byCsv
       ? `الأبب هيقرأ قيمة عمود التوزيع في CSV ويربط كل قيمة بـ ${assignmentTargetLabel()}. لو خانة العمود فاضية هيستخدم عمود الـ Custom Attribute.`
       : `كل المحادثات في الحملة دي هتتعيّن لنفس الـ ${assignmentTargetLabel()} المختار.`;
   }
@@ -2926,13 +2943,17 @@ function updateAgentMapStatus(values = null) {
     status.className = 'agent-map-status hint';
     return;
   }
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     const target = currentAssignmentTargets().find(item => String(item.id) === String($('fixedAgentSelect')?.value || ''));
     if (target) {
-      status.textContent = `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
+      status.textContent = assignmentMode() === 'on_reply_team'
+        ? `جاهز: عند رد العميل سيتم التوزيع بالتساوي على أعضاء ${assignmentTargetName(target)}.`
+        : `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
       status.className = 'agent-map-status ok';
     } else {
-      status.textContent = `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
+      status.textContent = assignmentMode() === 'on_reply_team'
+        ? 'اختار التيم الذي سيتم التوزيع على أعضائه عند رد العميل.'
+        : `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
       status.className = 'agent-map-status warn';
     }
     return;
@@ -2963,7 +2984,7 @@ function buildAgentMappingUI() {
     return true;
   }
   populateFixedAgentSelect();
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     updateAgentMapStatus([]);
     return !!$('fixedAgentSelect')?.value;
   }
@@ -3054,13 +3075,18 @@ async function syncTeams() {
 
 async function prepareAssignmentMap(rows) {
   if (!$('autoAssign')?.checked) return true;
+  if (assignmentMode() === 'on_reply_team' && $('assignTargetType')) $('assignTargetType').value = 'team';
   if (!currentAssignmentTargets().length) {
     const ok = assignmentTargetType() === 'team' ? await syncTeams() : await syncInboxAgents();
     if (!ok) return false;
   } else {
     buildAgentMappingUI();
   }
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() === 'on_reply_team' && assignmentTargetType() !== 'team') {
+    log('✗ التوزيع عند رد العميل لازم يكون على Team', 'err');
+    return false;
+  }
+  if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     const targetId = $('fixedAgentSelect')?.value;
     if (!targetId) {
       log(`✗ لا يمكن الإرسال: اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة`, 'err');
@@ -3080,7 +3106,7 @@ async function prepareAssignmentMap(rows) {
 }
 
 function mappedAgentForRow(row, attrCol) {
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     const targetId = $('fixedAgentSelect')?.value;
     if (!targetId) return null;
     return currentAssignmentTargets().find(target => String(target.id) === String(targetId)) || { id: targetId, name: `${assignmentTargetLabel()} #${targetId}` };
@@ -3093,6 +3119,10 @@ function mappedAgentForRow(row, attrCol) {
 
 async function assignConversationToCsvAgent(conversationId, row, attrCol) {
   if (!$('autoAssign')?.checked) return true;
+  if (assignmentMode() === 'on_reply_team') {
+    log(`  ↳ توزيع مؤجل: سيتم تعيين المحادثة عند رد العميل`, 'inf');
+    return true;
+  }
   const acc = $('accId').value;
   const target = mappedAgentForRow(row, attrCol);
   const targetValue = assignmentMode() === 'fixed_agent'

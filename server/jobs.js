@@ -298,6 +298,7 @@ async function runSendJob(job, runtime) {
   if (!labelName) throw new Error('Label name is required');
   if (!inboxId) throw new Error('WhatsApp inbox is required');
   if (!templateName) throw new Error('Template name is required');
+  assertReplyAssignmentSettings(settings);
   if (attrCol) ensureColumnExists(rows, attrCol, 'Custom attribute column');
   assertTemplateMappings(rows, settings);
 
@@ -369,6 +370,7 @@ function normalizeSettings(settings) {
     assignmentTargetType: String(settings.assignmentTargetType || 'agent'),
     assignmentValueColumn: String(settings.assignmentValueColumn || settings.attrCol || '').trim(),
     fixedTargetId: String(settings.fixedTargetId || '').trim(),
+    fixedTargetName: String(settings.fixedTargetName || '').trim().slice(0, 120),
     assignmentMap: settings.assignmentMap && typeof settings.assignmentMap === 'object' ? settings.assignmentMap : {},
     operatorName: String(settings.operatorName || '').trim().slice(0, 80),
   };
@@ -591,7 +593,8 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     labelName: settings.labelName,
     templateName: settings.templateName,
     ttlSeconds: markerTtlSeconds,
-    pendingTtlSeconds: pendingMarkerTtlSeconds
+    pendingTtlSeconds: pendingMarkerTtlSeconds,
+    replyAssignment: buildReplyAssignment(settings, campaignKey, result.id)
   };
   const conv = await ensureCampaignConversation(job, runtime, result.id, row, marker);
   const details = await getConversationDetails(job, config, conv.id);
@@ -756,6 +759,10 @@ async function applyPostSendConversationStatus(job, runtime, conversationId, cur
 async function assignConversation(job, runtime, conversationId, row) {
   const { config, settings } = runtime;
   if (!settings.autoAssign) return true;
+  if (settings.assignmentMode === 'on_reply_team') {
+    await logJob(job, `Assignment deferred until customer reply for conversation #${conversationId}`, 'info');
+    return true;
+  }
   const targetId = resolveAssignmentTarget(row, settings);
   if (!targetId) {
     await logJob(job, `No assignment target for ${row.name || row.phone_number}`, 'warn');
@@ -895,6 +902,27 @@ function resolveAssignmentTarget(row, settings) {
   if (settings.assignmentMode === 'fixed_agent') return settings.fixedTargetId;
   const value = String(row[settings.assignmentValueColumn] || row[settings.attrCol] || '').trim();
   return settings.assignmentMap[value] || '';
+}
+
+function assertReplyAssignmentSettings(settings) {
+  if (!settings.autoAssign || settings.assignmentMode !== 'on_reply_team') return;
+  if (settings.assignmentTargetType !== 'team') {
+    throw new Error('Reply-based assignment requires Team target type');
+  }
+  if (!settings.fixedTargetId) {
+    throw new Error('Reply-based assignment requires selecting a Team');
+  }
+}
+
+function buildReplyAssignment(settings, campaignKey, contactId) {
+  if (!settings.autoAssign || settings.assignmentMode !== 'on_reply_team') return null;
+  return {
+    mode: 'on_reply_team',
+    teamId: settings.fixedTargetId,
+    teamName: settings.fixedTargetName,
+    inboxId: settings.inboxId,
+    assignmentKey: `${campaignKey}:${settings.inboxId}:${contactId}`,
+  };
 }
 
 function buildTemplatePayload(row, settings) {
