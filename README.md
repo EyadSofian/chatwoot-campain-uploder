@@ -42,6 +42,53 @@ marked `sent`; failed sends expire their marker immediately. A `pending` marker
 expires after one hour by default, so an interrupted job cannot block normal
 routing for the full campaign window.
 
+## Assign on Customer Reply (Team Round-Robin)
+
+By default the app assigns each conversation at send time. There is also an
+`on_reply_team` assignment mode that does the opposite: the broadcast goes out
+to everyone **unassigned**, and no agent is touched until the customer takes an
+action. When the customer replies, an incoming-message webhook triggers the
+app, which assigns the conversation to the next member of the chosen team using
+a persisted round-robin counter — so replies are distributed **equally** across
+the team members you designated for the campaign, using our own logic instead
+of Chatwoot's built-in routing.
+
+How to use it:
+
+1. In the assignment panel choose `توزيع بالتساوي على التيم عند رد العميل`
+   (`on_reply_team`) and pick the team.
+2. Run the campaign as a server-side Background Job (not Dry Run).
+3. In Chatwoot, add a Webhook (Settings → Integrations → Webhooks) pointing to:
+
+   ```text
+   https://<your-app>/api/webhooks/chatwoot
+   ```
+
+   Subscribe it to the `Message created` event.
+
+4. Set `CHATWOOT_API_TOKEN` on the server (required — the webhook runs
+   server-to-server without the UI token).
+
+Required env for this feature:
+
+```bash
+CHATWOOT_API_TOKEN=<agent_or_bot_access_token>
+```
+
+Optional:
+
+```bash
+WEBHOOK_SECRET=<shared_secret>
+```
+
+If `WEBHOOK_SECRET` is set, the webhook must include it as `?token=<secret>` in
+the URL or an `x-webhook-token` header; requests without it are rejected.
+
+The app stamps each conversation with `api_campaign_assign_mode=on_reply`,
+`api_campaign_assign_team=<teamId>`, and `api_campaign_assign_status` (moving
+from `awaiting` to `done`). The webhook ignores conversations that are already
+assigned or already routed, so duplicate replies do not reassign.
+
 ## Safe Sending Flow
 
 1. Open the app.

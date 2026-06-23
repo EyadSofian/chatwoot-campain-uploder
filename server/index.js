@@ -4,6 +4,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { registerJobRoutes } from './jobs.js';
+import { registerReplyRouterRoutes } from './replyRouter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -21,6 +22,8 @@ app.use((req, res, next) => {
 
 app.use('/api/jobs', express.json({ limit: '25mb' }));
 registerJobRoutes(app);
+
+registerReplyRouterRoutes(app, express);
 
 app.use('/api/chatwoot', express.json({ limit: '1mb' }));
 

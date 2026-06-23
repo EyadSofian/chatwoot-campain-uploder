@@ -407,6 +407,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
             <select id="assignMode" onchange="toggleAssignmentPanel()">
               <option value="by_csv">حسب قيمة في CSV</option>
               <option value="fixed_agent">نفس الاختيار لكل الحملة</option>
+              <option value="on_reply_team">توزيع بالتساوي على التيم عند رد العميل</option>
             </select>
           </div>
         </div>
@@ -2893,7 +2894,14 @@ function toggleAssignmentPanel() {
   const enabled = $('autoAssign').checked;
   if (body) body.style.display = enabled ? 'block' : 'none';
 
-  const byCsv = assignmentMode() === 'by_csv';
+  const mode = assignmentMode();
+  const onReplyTeam = mode === 'on_reply_team';
+  // on_reply_team always distributes within a team, so force the target type.
+  const targetTypeSelect = $('assignTargetType');
+  if (onReplyTeam && targetTypeSelect) targetTypeSelect.value = 'team';
+  if (targetTypeSelect) targetTypeSelect.disabled = onReplyTeam;
+
+  const byCsv = mode === 'by_csv';
   const fixedWrap = $('fixedAgentWrap');
   const csvColumnWrap = $('csvTargetColumnWrap');
   const mapWrap = $('agentMap');
@@ -2904,14 +2912,20 @@ function toggleAssignmentPanel() {
   if (csvColumnWrap) csvColumnWrap.style.display = enabled && byCsv ? 'block' : 'none';
   if (mapWrap) mapWrap.style.display = enabled && byCsv ? 'grid' : 'none';
   if (fixedTargetLabel) {
-    fixedTargetLabel.textContent = assignmentTargetType() === 'team'
-      ? 'التيم المسؤول عن كل الحملة'
-      : 'الموظف المسؤول عن كل الحملة';
+    fixedTargetLabel.textContent = onReplyTeam
+      ? 'التيم اللي هيتوزّع عليه الردود'
+      : assignmentTargetType() === 'team'
+        ? 'التيم المسؤول عن كل الحملة'
+        : 'الموظف المسؤول عن كل الحملة';
   }
   if (help) {
-    help.textContent = byCsv
-      ? `الأبب هيقرأ قيمة عمود التوزيع في CSV ويربط كل قيمة بـ ${assignmentTargetLabel()}. لو خانة العمود فاضية هيستخدم عمود الـ Custom Attribute.`
-      : `كل المحادثات في الحملة دي هتتعيّن لنفس الـ ${assignmentTargetLabel()} المختار.`;
+    if (onReplyTeam) {
+      help.textContent = 'المحادثات تتبعت من غير ما تتعيّن لأي موظف. أول ما العميل يرد، الأبب يوزّع المحادثة بالتساوي (round-robin) على أعضاء التيم المختار. محتاج تظبط Webhook في Chatwoot على /api/webhooks/chatwoot.';
+    } else if (byCsv) {
+      help.textContent = `الأبب هيقرأ قيمة عمود التوزيع في CSV ويربط كل قيمة بـ ${assignmentTargetLabel()}. لو خانة العمود فاضية هيستخدم عمود الـ Custom Attribute.`;
+    } else {
+      help.textContent = `كل المحادثات في الحملة دي هتتعيّن لنفس الـ ${assignmentTargetLabel()} المختار.`;
+    }
   }
 
   populateFixedAgentSelect();
@@ -2926,13 +2940,18 @@ function updateAgentMapStatus(values = null) {
     status.className = 'agent-map-status hint';
     return;
   }
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() !== 'by_csv') {
+    const onReplyTeam = assignmentMode() === 'on_reply_team';
     const target = currentAssignmentTargets().find(item => String(item.id) === String($('fixedAgentSelect')?.value || ''));
     if (target) {
-      status.textContent = `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
+      status.textContent = onReplyTeam
+        ? `جاهز: الردود هتتوزّع بالتساوي على أعضاء ${assignmentTargetName(target)}.`
+        : `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
       status.className = 'agent-map-status ok';
     } else {
-      status.textContent = `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
+      status.textContent = onReplyTeam
+        ? 'اختار التيم اللي هيتوزّع عليه الردود.'
+        : `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
       status.className = 'agent-map-status warn';
     }
     return;
@@ -2963,7 +2982,7 @@ function buildAgentMappingUI() {
     return true;
   }
   populateFixedAgentSelect();
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() !== 'by_csv') {
     updateAgentMapStatus([]);
     return !!$('fixedAgentSelect')?.value;
   }
@@ -3060,10 +3079,12 @@ async function prepareAssignmentMap(rows) {
   } else {
     buildAgentMappingUI();
   }
-  if (assignmentMode() === 'fixed_agent') {
+  if (assignmentMode() !== 'by_csv') {
     const targetId = $('fixedAgentSelect')?.value;
     if (!targetId) {
-      log(`✗ لا يمكن الإرسال: اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة`, 'err');
+      log(assignmentMode() === 'on_reply_team'
+        ? '✗ لا يمكن الإرسال: اختار التيم اللي هيتوزّع عليه الردود'
+        : `✗ لا يمكن الإرسال: اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة`, 'err');
       return false;
     }
     return true;
@@ -3093,6 +3114,10 @@ function mappedAgentForRow(row, attrCol) {
 
 async function assignConversationToCsvAgent(conversationId, row, attrCol) {
   if (!$('autoAssign')?.checked) return true;
+  if (assignmentMode() === 'on_reply_team') {
+    log('  ↳ ℹ️ التوزيع عند الرد: المحادثة مش هتتعيّن دلوقتي، هتتوزّع لما العميل يرد (لازم تشغّل الإرسال كـ Background Job + Webhook)', 'inf');
+    return true;
+  }
   const acc = $('accId').value;
   const target = mappedAgentForRow(row, attrCol);
   const targetValue = assignmentMode() === 'fixed_agent'

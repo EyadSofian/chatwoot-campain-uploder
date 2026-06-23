@@ -756,6 +756,13 @@ async function applyPostSendConversationStatus(job, runtime, conversationId, cur
 async function assignConversation(job, runtime, conversationId, row) {
   const { config, settings } = runtime;
   if (!settings.autoAssign) return true;
+
+  // Deferred mode: do not assign now. Mark the conversation so the reply
+  // router can distribute it across the team when the customer replies.
+  if (settings.assignmentMode === 'on_reply_team') {
+    return markDeferredTeamAssignment(job, runtime, conversationId);
+  }
+
   const targetId = resolveAssignmentTarget(row, settings);
   if (!targetId) {
     await logJob(job, `No assignment target for ${row.name || row.phone_number}`, 'warn');
@@ -895,6 +902,39 @@ function resolveAssignmentTarget(row, settings) {
   if (settings.assignmentMode === 'fixed_agent') return settings.fixedTargetId;
   const value = String(row[settings.assignmentValueColumn] || row[settings.attrCol] || '').trim();
   return settings.assignmentMap[value] || '';
+}
+
+// Records the team to round-robin into when the customer replies, without
+// assigning an agent now. The reply router reads these attributes.
+async function markDeferredTeamAssignment(job, runtime, conversationId) {
+  const { config, settings } = runtime;
+  const teamId = settings.fixedTargetId;
+  if (!teamId) {
+    await logJob(job, `No team selected for on-reply assignment on conversation #${conversationId}`, 'warn');
+    return false;
+  }
+  const details = await getConversationDetails(job, config, conversationId);
+  const attrs = details?.custom_attributes || {};
+  const merged = {
+    ...attrs,
+    api_campaign_assign_mode: 'on_reply',
+    api_campaign_assign_team: String(teamId),
+    api_campaign_assign_status: attrs.api_campaign_assign_status === 'done' ? 'done' : 'awaiting'
+  };
+  const r = await cwFetch(
+    job,
+    config,
+    `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`,
+    'POST',
+    { custom_attributes: merged },
+    2
+  );
+  if (!r.ok) {
+    await logJob(job, `Deferred assignment marker failed for conversation #${conversationId}: HTTP ${r.status} ${JSON.stringify(r.data)}`, 'warn');
+    return false;
+  }
+  await logJob(job, `Conversation #${conversationId} will be assigned to a member of team #${teamId} when the customer replies`, 'ok');
+  return true;
 }
 
 function buildTemplatePayload(row, settings) {
