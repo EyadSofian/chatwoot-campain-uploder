@@ -22,6 +22,7 @@ const activeJobs = new Map();
 const queueChains = new Map();
 const maxParallelQueues = clampInt(process.env.MAX_PARALLEL_JOB_QUEUES || 3, 1, 8);
 const globalQueueLimiter = createLimiter(maxParallelQueues);
+let orphanedJobsRecovered = false;
 
 export function registerJobRoutes(app) {
   app.use('/api/jobs', async (_req, res, next) => {
@@ -97,10 +98,50 @@ export function registerJobRoutes(app) {
     const active = activeJobs.get(req.params.id);
     if (active) active.stopRequested = true;
     job.stopRequested = true;
-    if (job.status === 'queued') job.status = 'stopped';
+    if (!active && ['queued', 'running'].includes(job.status)) {
+      job.status = 'interrupted';
+      job.lastError = 'Job is not active on this server. It was probably interrupted by a restart or redeploy.';
+    } else if (job.status === 'queued') {
+      job.status = 'stopped';
+    }
     job.updatedAt = new Date().toISOString();
     await writeJob(job);
     res.json({ ok: true, job });
+  });
+
+  app.post('/api/jobs/:id/requeue-remaining', async (req, res) => {
+    try {
+      const job = await readJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (isActiveJob(job)) {
+        return res.status(409).json({ error: 'Job is still active. Stop it first if you really want to requeue.' });
+      }
+      const input = await readJobInput(job.id);
+      if (!input?.rows?.length) {
+        return res.status(409).json({
+          error: 'This job cannot be resumed because it was created before resumable jobs were enabled. Start the campaign again; duplicate guard will skip already-sent conversations.'
+        });
+      }
+      const startIndex = clampInt(req.body?.fromIndex ?? job.processed ?? 0, 0, input.rows.length);
+      const remaining = input.rows.slice(startIndex);
+      if (!remaining.length) return res.status(409).json({ error: 'No remaining rows to requeue' });
+
+      const settings = {
+        ...(input.settings || {}),
+        ...(req.body?.settings || {}),
+      };
+      const created = await createJob(input.type || job.type, {
+        rows: remaining,
+        settings,
+      });
+      job.status = ['running', 'queued'].includes(job.status) ? 'interrupted' : job.status;
+      job.lastError = `Remaining rows requeued into job ${created.publicJob.id}`;
+      job.updatedAt = new Date().toISOString();
+      await writeJob(job);
+      res.status(202).json({ job: created.publicJob, remaining: remaining.length, fromIndex: startIndex });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
   });
 
   app.post('/api/jobs/:id/check-delivery', async (req, res) => {
@@ -156,6 +197,25 @@ export function registerJobRoutes(app) {
 
 async function ensureStore() {
   await fs.mkdir(JOBS_DIR, { recursive: true });
+  if (!orphanedJobsRecovered) {
+    orphanedJobsRecovered = true;
+    await recoverOrphanedJobs();
+  }
+}
+
+async function recoverOrphanedJobs() {
+  const files = await fs.readdir(JOBS_DIR).catch(() => []);
+  for (const file of files.filter((item) => item.endsWith('.json') && !item.endsWith('-input.json'))) {
+    const job = await readJob(path.basename(file, '.json'));
+    if (!job || !['queued', 'running'].includes(job.status) || activeJobs.has(job.id)) continue;
+
+    job.status = 'interrupted';
+    job.lastError = 'Server restarted or redeployed while this job was active. Requeue remaining rows or start the campaign again.';
+    job.finishedAt = job.finishedAt || new Date().toISOString();
+    job.updatedAt = new Date().toISOString();
+    await writeJob(job);
+    await logJob(job, job.lastError, 'warn').catch(() => {});
+  }
 }
 
 async function createJob(type, body = {}) {
@@ -202,6 +262,7 @@ async function createJob(type, body = {}) {
   };
 
   await writeJob(job);
+  await writeJobInput(job.id, type, rows, body.settings || {});
   await clearJobFiles(job.id);
   await logJob(job, `Job queued: ${type} (${rows.length} rows) — ${queueInfo.label}`, 'info');
   if (settings.operatorName) await logJob(job, `Operator: ${settings.operatorName}`, 'info');
@@ -1292,7 +1353,7 @@ async function listJobs() {
   await ensureStore();
   const files = await fs.readdir(JOBS_DIR).catch(() => []);
   const jobs = [];
-  for (const file of files.filter((item) => item.endsWith('.json'))) {
+  for (const file of files.filter((item) => item.endsWith('.json') && !item.endsWith('-input.json'))) {
     const job = await readJob(path.basename(file, '.json'));
     if (job) jobs.push(job);
   }
@@ -1313,8 +1374,31 @@ async function writeJob(job) {
   await fs.writeFile(getJobPath(job.id), JSON.stringify(job, null, 2), 'utf8');
 }
 
+async function writeJobInput(jobId, type, rows, settings) {
+  const safeSettings = sanitizeSettings(settings || {});
+  safeSettings.apiToken = '';
+  await fs.writeFile(getJobInputPath(jobId), JSON.stringify({ type, rows, settings: safeSettings }, null, 2), 'utf8');
+}
+
+async function readJobInput(jobId) {
+  try {
+    const raw = await fs.readFile(getJobInputPath(jobId), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function isActiveJob(job) {
+  return Boolean(job?.id && ['queued', 'running'].includes(job.status) && activeJobs.has(job.id));
+}
+
 function getJobPath(id) {
   return path.join(JOBS_DIR, `${id}.json`);
+}
+
+function getJobInputPath(id) {
+  return path.join(JOBS_DIR, `${id}-input.json`);
 }
 
 function getJobLogPath(id) {

@@ -184,7 +184,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-status{font-size:12px;line-height:1.6;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
 .job-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .jobs-list{display:grid;gap:8px;max-height:220px;overflow:auto}
-.job-row{display:grid;grid-template-columns:minmax(0,1.4fr) auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.job-row{display:grid;grid-template-columns:minmax(0,1.4fr) auto auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .job-row-main{min-width:0}
 .job-row-title{font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .job-row-meta{font-size:10.5px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -192,6 +192,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-pill.running{color:var(--brand);border-color:var(--brand-line);background:var(--brand-soft)}
 .job-pill.completed{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
 .job-pill.failed,.job-pill.completed_with_errors{color:var(--err);border-color:var(--err);background:var(--err-soft)}
+.job-pill.interrupted{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,.12)}
 @media(max-width:520px){.assign-actions,.agent-map-row{grid-template-columns:1fr}.agent-map-arrow{display:none}}
 @media(max-width:520px){.job-actions,.job-row{grid-template-columns:1fr}}
 @media(max-width:520px){.header{flex-wrap:wrap}.badge{margin-right:0}.theme-btn{flex:1}}
@@ -863,7 +864,7 @@ function updateServerJobUI(job) {
     showCheckDeliveryBtn();
   }
 
-  if (['completed', 'completed_with_errors', 'failed', 'stopped'].includes(job.status)) {
+  if (['completed', 'completed_with_errors', 'failed', 'stopped', 'interrupted'].includes(job.status)) {
     if (serverJobPollTimer) clearInterval(serverJobPollTimer);
     serverJobPollTimer = null;
     $('runBtn').disabled = false;
@@ -924,10 +925,13 @@ function renderJobRow(job) {
   const done = job.type === 'send' ? (c.sent || 0) : (c.new || 0) + (c.updated || 0);
   const failed = job.type === 'send' ? (c.errors || 0) : (c.failed || 0);
   const title = `${job.type === 'send' ? 'Send' : 'Upload'} • ${job.settings?.labelName || '-'} • ${job.queueLabel || '-'}`;
+  const remaining = Math.max(0, (job.total || 0) - (job.processed || 0));
+  const canRequeue = ['interrupted', 'stopped', 'failed'].includes(job.status || '') && remaining > 0;
   const meta = [
     job.operatorName ? `by ${job.operatorName}` : 'بدون اسم مشغّل',
     `${job.processed || 0}/${job.total || 0}`,
     `done ${done}`,
+    remaining ? `remaining ${remaining}` : '',
     failed ? `failed ${failed}` : '',
     formatJobTime(job.createdAt),
   ].filter(Boolean).join(' • ');
@@ -938,10 +942,28 @@ function renderJobRow(job) {
         <div class="job-row-meta">${escapeHtml(meta)}</div>
       </div>
       <span class="job-pill ${escapeHtml(job.status || '')}">${escapeHtml(job.status || 'unknown')}</span>
+      ${canRequeue ? `<button class="secondary" type="button" onclick="requeueRemainingJob('${escapeHtml(job.id)}')">استكمال المتبقي</button>` : '<span></span>'}
       <button class="secondary" type="button" onclick="followServerJob('${escapeHtml(job.id)}')">متابعة</button>
     </div>`;
 }
 
+async function requeueRemainingJob(jobId) {
+  if (!jobId) return;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/requeue-remaining`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: collectServerJobSettings() })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    log(`Requeued ${data.remaining || 0} remaining rows from index ${data.fromIndex || 0}`, 'ok');
+    if (data.job?.id) followServerJob(data.job.id);
+    refreshJobsList();
+  } catch (err) {
+    log(`Requeue remaining failed: ${err.message}`, 'err');
+  }
+}
 function followServerJob(jobId) {
   if (!jobId) return;
   activeServerJobId = jobId;
