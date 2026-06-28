@@ -111,6 +111,37 @@ export function registerJobRoutes(app) {
     res.json({ ok: true, job });
   });
 
+  app.post('/api/jobs/:id/start', async (req, res) => {
+    try {
+      const job = await readJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (isActiveJob(job)) {
+        return res.status(409).json({ error: 'Job is already active' });
+      }
+      if (!['queued', 'stopped', 'interrupted'].includes(job.status)) {
+        return res.status(409).json({ error: `Job cannot be started from status ${job.status}` });
+      }
+      if ((job.processed || 0) > 0) {
+        return res.status(409).json({ error: 'This job already processed rows. Use requeue remaining instead.' });
+      }
+
+      const input = await readJobInput(job.id);
+      if (!input?.rows?.length) {
+        return res.status(409).json({ error: 'Saved job input is missing. Start a new upload/send job.' });
+      }
+      await startStoredJob(job, {
+        ...input,
+        settings: {
+          ...(input.settings || {}),
+          ...(req.body?.settings || {}),
+        },
+      }, 'Queued job started manually');
+      res.status(202).json({ ok: true, job: await readJob(job.id) });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/jobs/:id/requeue-remaining', async (req, res) => {
     try {
       const job = await readJob(req.params.id);
@@ -236,11 +267,15 @@ async function restoreQueuedJob(job) {
     return;
   }
 
+  await startStoredJob(job, input, 'Queued job restored after server restart');
+}
+
+async function startStoredJob(job, input, reason) {
   const settings = normalizeSettings(input.settings || job.settings || {});
   const config = buildConfig(input.settings || job.settings || {});
   if (!config.token) {
     job.status = 'interrupted';
-    job.lastError = 'Queued job cannot be restored because CHATWOOT_API_TOKEN is missing on the server.';
+    job.lastError = 'Queued job cannot start because CHATWOOT_API_TOKEN is missing on the server or current tab settings.';
     job.updatedAt = new Date().toISOString();
     await writeJob(job);
     await logJob(job, job.lastError, 'warn').catch(() => {});
@@ -250,6 +285,9 @@ async function restoreQueuedJob(job) {
   const queueInfo = getQueueInfo(input.type || job.type, settings, config);
   job.queueKey = job.queueKey || queueInfo.key;
   job.queueLabel = job.queueLabel || queueInfo.label;
+  job.status = 'queued';
+  job.stopRequested = false;
+  job.lastError = '';
   job.updatedAt = new Date().toISOString();
   await writeJob(job);
 
@@ -262,7 +300,7 @@ async function restoreQueuedJob(job) {
     queueGroup: queueInfo.group,
   });
   enqueueJob(job.id, job.queueKey, queueInfo.group);
-  await logJob(job, 'Queued job restored after server restart', 'warn').catch(() => {});
+  await logJob(job, reason || 'Queued job started', 'warn').catch(() => {});
 }
 
 async function createJob(type, body = {}) {
@@ -1278,6 +1316,7 @@ function summarizeJob(job) {
   summary.sentTrackCount = Array.isArray(sentTrack) ? sentTrack.length : 0;
   summary.failedRecordsCount = Array.isArray(failedRecords) ? failedRecords.length : 0;
   summary.deliveryFailuresCount = Array.isArray(deliveryFailures) ? deliveryFailures.length : 0;
+  summary.active = isActiveJob(job);
   return summary;
 }
 

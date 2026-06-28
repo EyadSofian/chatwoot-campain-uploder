@@ -184,7 +184,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-status{font-size:12px;line-height:1.6;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
 .job-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .jobs-list{display:grid;gap:8px;max-height:220px;overflow:auto}
-.job-row{display:grid;grid-template-columns:minmax(0,1.4fr) auto auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.job-row{display:grid;grid-template-columns:minmax(0,1.4fr) auto auto auto auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .job-row-main{min-width:0}
 .job-row-title{font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .job-row-meta{font-size:10.5px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -926,10 +926,14 @@ function renderJobRow(job) {
   const failed = job.type === 'send' ? (c.errors || 0) : (c.failed || 0);
   const title = `${job.type === 'send' ? 'Send' : 'Upload'} • ${job.settings?.labelName || '-'} • ${job.queueLabel || '-'}`;
   const remaining = Math.max(0, (job.total || 0) - (job.processed || 0));
+  const staleQueued = job.status === 'queued' && job.active === false;
+  const canStartQueued = staleQueued && (job.processed || 0) === 0 && remaining > 0;
   const canRequeue = ['interrupted', 'stopped', 'failed'].includes(job.status || '') && remaining > 0;
+  const canStop = ['queued', 'running'].includes(job.status || '');
   const meta = [
     job.operatorName ? `by ${job.operatorName}` : 'بدون اسم مشغّل',
     `${job.processed || 0}/${job.total || 0}`,
+    job.status === 'queued' ? (job.active ? 'live queue' : 'stale queue') : '',
     `done ${done}`,
     remaining ? `remaining ${remaining}` : '',
     failed ? `failed ${failed}` : '',
@@ -942,9 +946,28 @@ function renderJobRow(job) {
         <div class="job-row-meta">${escapeHtml(meta)}</div>
       </div>
       <span class="job-pill ${escapeHtml(job.status || '')}">${escapeHtml(job.status || 'unknown')}</span>
-      ${canRequeue ? `<button class="secondary" type="button" onclick="requeueRemainingJob('${escapeHtml(job.id)}')">استكمال المتبقي</button>` : '<span></span>'}
+      ${canStartQueued ? `<button class="secondary" type="button" onclick="startQueuedJob('${escapeHtml(job.id)}')">تشغيل</button>` : (canRequeue ? `<button class="secondary" type="button" onclick="requeueRemainingJob('${escapeHtml(job.id)}')">استكمال المتبقي</button>` : '<span></span>')}
+      ${canStop ? `<button class="secondary" type="button" onclick="stopJobById('${escapeHtml(job.id)}')">إلغاء</button>` : '<span></span>'}
       <button class="secondary" type="button" onclick="followServerJob('${escapeHtml(job.id)}')">متابعة</button>
     </div>`;
+}
+
+async function startQueuedJob(jobId) {
+  if (!jobId) return;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: collectServerJobSettings() })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    log(`Started queued job ${jobId}`, 'ok');
+    followServerJob(jobId);
+    refreshJobsList();
+  } catch (err) {
+    log(`Start queued job failed: ${err.message}`, 'err');
+  }
 }
 
 async function requeueRemainingJob(jobId) {
@@ -962,6 +985,20 @@ async function requeueRemainingJob(jobId) {
     refreshJobsList();
   } catch (err) {
     log(`Requeue remaining failed: ${err.message}`, 'err');
+  }
+}
+
+async function stopJobById(jobId) {
+  if (!jobId) return;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    log(`Stopped job ${jobId}`, 'warn');
+    if (activeServerJobId === jobId) pollServerJob(jobId);
+    refreshJobsList();
+  } catch (err) {
+    log(`Stop job failed: ${err.message}`, 'err');
   }
 }
 function followServerJob(jobId) {
