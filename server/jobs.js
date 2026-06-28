@@ -20,8 +20,10 @@ const RETRYABLE_WA_ERRORS = new Set([131026]);
 
 const activeJobs = new Map();
 const queueChains = new Map();
-const maxParallelQueues = clampInt(process.env.MAX_PARALLEL_JOB_QUEUES || 3, 1, 8);
-const globalQueueLimiter = createLimiter(maxParallelQueues);
+const maxParallelSendQueues = clampInt(process.env.MAX_PARALLEL_SEND_QUEUES || process.env.MAX_PARALLEL_JOB_QUEUES || 3, 1, 8);
+const maxParallelContactQueues = clampInt(process.env.MAX_PARALLEL_CONTACT_QUEUES || 1, 1, 3);
+const sendQueueLimiter = createLimiter(maxParallelSendQueues);
+const contactQueueLimiter = createLimiter(maxParallelContactQueues);
 let orphanedJobsRecovered = false;
 
 export function registerJobRoutes(app) {
@@ -209,6 +211,11 @@ async function recoverOrphanedJobs() {
     const job = await readJob(path.basename(file, '.json'));
     if (!job || !['queued', 'running'].includes(job.status) || activeJobs.has(job.id)) continue;
 
+    if (job.status === 'queued') {
+      await restoreQueuedJob(job);
+      continue;
+    }
+
     job.status = 'interrupted';
     job.lastError = 'Server restarted or redeployed while this job was active. Requeue remaining rows or start the campaign again.';
     job.finishedAt = job.finishedAt || new Date().toISOString();
@@ -216,6 +223,46 @@ async function recoverOrphanedJobs() {
     await writeJob(job);
     await logJob(job, job.lastError, 'warn').catch(() => {});
   }
+}
+
+async function restoreQueuedJob(job) {
+  const input = await readJobInput(job.id);
+  if (!input?.rows?.length) {
+    job.status = 'interrupted';
+    job.lastError = 'Queued job cannot be restored because its saved input is missing.';
+    job.updatedAt = new Date().toISOString();
+    await writeJob(job);
+    await logJob(job, job.lastError, 'warn').catch(() => {});
+    return;
+  }
+
+  const settings = normalizeSettings(input.settings || job.settings || {});
+  const config = buildConfig(input.settings || job.settings || {});
+  if (!config.token) {
+    job.status = 'interrupted';
+    job.lastError = 'Queued job cannot be restored because CHATWOOT_API_TOKEN is missing on the server.';
+    job.updatedAt = new Date().toISOString();
+    await writeJob(job);
+    await logJob(job, job.lastError, 'warn').catch(() => {});
+    return;
+  }
+
+  const queueInfo = getQueueInfo(input.type || job.type, settings, config);
+  job.queueKey = job.queueKey || queueInfo.key;
+  job.queueLabel = job.queueLabel || queueInfo.label;
+  job.updatedAt = new Date().toISOString();
+  await writeJob(job);
+
+  activeJobs.set(job.id, {
+    config,
+    rows: input.rows,
+    settings,
+    stopRequested: false,
+    queueKey: job.queueKey,
+    queueGroup: queueInfo.group,
+  });
+  enqueueJob(job.id, job.queueKey, queueInfo.group);
+  await logJob(job, 'Queued job restored after server restart', 'warn').catch(() => {});
 }
 
 async function createJob(type, body = {}) {
@@ -267,9 +314,9 @@ async function createJob(type, body = {}) {
   await logJob(job, `Job queued: ${type} (${rows.length} rows) — ${queueInfo.label}`, 'info');
   if (settings.operatorName) await logJob(job, `Operator: ${settings.operatorName}`, 'info');
 
-  const runtime = { config, rows, settings, stopRequested: false, queueKey: queueInfo.key };
+  const runtime = { config, rows, settings, stopRequested: false, queueKey: queueInfo.key, queueGroup: queueInfo.group };
   activeJobs.set(job.id, runtime);
-  enqueueJob(job.id, queueInfo.key);
+  enqueueJob(job.id, queueInfo.key, queueInfo.group);
 
   return { publicJob: job };
 }
@@ -283,7 +330,7 @@ async function runJob(jobId) {
   job.startedAt = new Date().toISOString();
   job.updatedAt = job.startedAt;
   await writeJob(job);
-  await logJob(job, `Job started in ${job.queueLabel || runtime.queueKey || 'default queue'}; max parallel queues=${maxParallelQueues}`, 'info');
+  await logJob(job, `Job started in ${job.queueLabel || runtime.queueKey || 'default queue'}; send queues=${maxParallelSendQueues}; contact queues=${maxParallelContactQueues}`, 'info');
 
   try {
     if (job.type === 'upload') await runUploadJob(job, runtime);
@@ -1175,10 +1222,11 @@ function describeWhatsAppError(code) {
   return `WhatsApp error ${code}`;
 }
 
-function enqueueJob(jobId, queueKey) {
+function enqueueJob(jobId, queueKey, queueGroup = 'send') {
+  const limiter = queueGroup === 'contacts' ? contactQueueLimiter : sendQueueLimiter;
   const current = queueChains.get(queueKey) || Promise.resolve();
   const next = current
-    .then(() => globalQueueLimiter(() => runJob(jobId)))
+    .then(() => limiter(() => runJob(jobId)))
     .catch((err) => console.error('[jobs] queue error:', err))
     .finally(() => {
       if (queueChains.get(queueKey) === next) queueChains.delete(queueKey);
@@ -1215,11 +1263,13 @@ function getQueueInfo(type, settings, config) {
     return {
       key: `account:${config.accountId}:inbox:${settings.inboxId}`,
       label: `Inbox #${settings.inboxId}`,
+      group: 'send',
     };
   }
   return {
     key: `account:${config.accountId}:contacts`,
     label: type === 'upload' ? `Contacts queue / Account #${config.accountId}` : `Account #${config.accountId}`,
+    group: type === 'upload' ? 'contacts' : 'send',
   };
 }
 
