@@ -33,9 +33,17 @@ export function registerJobRoutes(app) {
     }
   });
 
-  app.get('/api/jobs', async (_req, res) => {
+  app.get('/api/jobs', async (req, res) => {
     const jobs = await listJobs();
-    res.json({ jobs });
+    const query = String(req.query.q || '').trim();
+    const limit = clampInt(req.query.limit || (query ? 100 : 20), 1, 200);
+    const filtered = query ? jobs.filter((job) => jobMatchesSearch(job, query)) : jobs;
+    res.json({
+      jobs: filtered.slice(0, limit).map(summarizeJob),
+      total: filtered.length,
+      limit,
+      query,
+    });
   });
 
   app.get('/api/jobs/latest', async (_req, res) => {
@@ -1142,7 +1150,7 @@ function createLimiter(max) {
 }
 
 function getQueueInfo(type, settings, config) {
-  if (settings.inboxId) {
+  if (type === 'send' && settings.inboxId) {
     return {
       key: `account:${config.accountId}:inbox:${settings.inboxId}`,
       label: `Inbox #${settings.inboxId}`,
@@ -1152,6 +1160,38 @@ function getQueueInfo(type, settings, config) {
     key: `account:${config.accountId}:contacts`,
     label: type === 'upload' ? `Contacts queue / Account #${config.accountId}` : `Account #${config.accountId}`,
   };
+}
+
+function summarizeJob(job) {
+  const { sentTrack, failedRecords, deliveryFailures, ...summary } = job || {};
+  summary.sentTrackCount = Array.isArray(sentTrack) ? sentTrack.length : 0;
+  summary.failedRecordsCount = Array.isArray(failedRecords) ? failedRecords.length : 0;
+  summary.deliveryFailuresCount = Array.isArray(deliveryFailures) ? deliveryFailures.length : 0;
+  return summary;
+}
+
+function jobMatchesSearch(job, query) {
+  const needle = normalizeSearchText(query);
+  if (!needle) return true;
+  const haystack = normalizeSearchText([
+    job?.id,
+    job?.type,
+    job?.status,
+    job?.operatorName,
+    job?.queueLabel,
+    job?.settings?.labelName,
+    job?.settings?.originalLabelName,
+    job?.settings?.templateName,
+  ].filter(Boolean).join(' '));
+  return haystack.includes(needle);
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, '');
 }
 
 function incrementUploadCounter(job, status) {

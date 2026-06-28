@@ -529,6 +529,11 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <button class="secondary" type="button" onclick="stopServerJob()">إيقاف Job</button>
         <button class="secondary" id="serverFailedBtn" type="button" onclick="downloadServerFailedCSV()" style="display:none">تحميل فشل السيرفر</button>
       </div>
+      <div class="field">
+        <label>بحث في الحملات السابقة</label>
+        <input id="jobSearch" oninput="refreshJobsList()" placeholder="اكتب اسم الحملة / Label / اسم المشغل">
+        <div class="hint">البحث بيدور في كل الـ Jobs المحفوظة على السيرفر، مش آخر 20 فقط.</div>
+      </div>
       <div class="jobs-list" id="jobsList"></div>
     </div>
   </div>
@@ -783,6 +788,7 @@ async function startServerJob(type) {
     try { localStorage.setItem('lastCampaignServerJobId', activeServerJobId); } catch (_) {}
     beginServerJobPolling(activeServerJobId);
     refreshJobsList();
+    if (btn) btn.disabled = false;
   } catch (err) {
     log(`فشل بدء Job على السيرفر: ${err.message}`, 'err');
     setJobStatus(`Start failed: ${err.message}`);
@@ -892,14 +898,22 @@ async function refreshJobsList() {
   if (!holder) return;
   holder.innerHTML = '<div class="job-status">جاري تحميل الـ Jobs...</div>';
   try {
-    const res = await fetch('/api/jobs');
+    const query = $('jobSearch')?.value.trim() || '';
+    const params = new URLSearchParams({ limit: query ? '100' : '20' });
+    if (query) params.set('q', query);
+    const res = await fetch(`/api/jobs?${params.toString()}`);
     const data = await res.json();
-    const jobs = Array.isArray(data.jobs) ? data.jobs.slice(0, 20) : [];
+    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
     if (!jobs.length) {
-      holder.innerHTML = '<div class="job-status">لا يوجد Jobs محفوظة.</div>';
+      holder.innerHTML = query
+        ? `<div class="job-status">مفيش نتائج للبحث: ${escapeHtml(query)}</div>`
+        : '<div class="job-status">لا يوجد Jobs محفوظة.</div>';
       return;
     }
-    holder.innerHTML = jobs.map(renderJobRow).join('');
+    const summary = query
+      ? `<div class="job-status">نتائج البحث عن "${escapeHtml(query)}": ${data.total || jobs.length}</div>`
+      : '';
+    holder.innerHTML = summary + jobs.map(renderJobRow).join('');
   } catch (err) {
     holder.innerHTML = `<div class="job-status">فشل تحميل الـ Jobs: ${escapeHtml(err.message)}</div>`;
   }
@@ -940,7 +954,7 @@ function formatJobTime(value) {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('ar-EG', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function escapeHtml(value) {

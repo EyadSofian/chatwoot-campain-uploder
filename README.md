@@ -9,6 +9,8 @@ Dashboard app for Chatwoot self-hosted that can:
 - Sync WhatsApp templates through Chatwoot.
 - Send WhatsApp template campaigns through Chatwoot API in safe test mode, so the campaign message appears in the conversation.
 - Defer assignment until the customer replies, then distribute replies round-robin across a selected Chatwoot team.
+- Run contact uploads and WhatsApp sends as server-side background jobs, with uploads separated from send queues.
+- Search saved campaign jobs by label/campaign name, operator, status, or template name.
 
 ## Railway
 
