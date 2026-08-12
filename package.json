@@ -1,6 +1,6 @@
 {
   "name": "chatwoot-smart-importer",
-  "version": "1.11.0",
+  "version": "1.14.0",
   "type": "module",
   "main": "server/index.js",
   "engines": {

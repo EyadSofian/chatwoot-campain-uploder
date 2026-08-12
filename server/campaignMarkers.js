@@ -51,22 +51,46 @@ export function buildCampaignMarkerAttributes({
   if (status === "failed" && error) merged.api_campaign_last_error = String(error).slice(0, 500);
   else delete merged.api_campaign_last_error;
 
-  if (replyAssignment?.mode === "on_reply_team") {
+  const preservePreviousReplyRoute = status === "failed"
+    && isTruthy(attrs.api_campaign_reply_pending)
+    && Boolean(String(attrs.api_campaign_reply_team_id || "").trim())
+    && Boolean(parseFutureDate(attrs.api_campaign_active_until, now));
+
+  if (preservePreviousReplyRoute) {
+    copyReplyRouteAttributes(merged, attrs);
+  } else if (replyAssignment?.mode === "on_reply_team") {
+    const sameRouteAlreadyCompleted = String(attrs.api_campaign_reply_assignment_key || "")
+      === String(replyAssignment.assignmentKey || "")
+      && Boolean(String(attrs.api_campaign_reply_assigned_at || "").trim());
     merged.api_campaign_reply_assign_mode = "on_reply_team";
     merged.api_campaign_reply_team_id = String(replyAssignment.teamId || "");
     merged.api_campaign_reply_team_name = String(replyAssignment.teamName || "");
     merged.api_campaign_reply_inbox_id = String(replyAssignment.inboxId || "");
     merged.api_campaign_reply_assignment_key = String(replyAssignment.assignmentKey || "");
-    merged.api_campaign_reply_pending = status !== "failed";
-    delete merged.api_campaign_reply_assigned_at;
-    delete merged.api_campaign_reply_assignee_id;
-    delete merged.api_campaign_reply_assignee_name;
+    merged.api_campaign_reply_rule_id = String(replyAssignment.ruleId || "");
+    merged.api_campaign_reply_rule_name = String(replyAssignment.ruleName || "");
+    merged.api_campaign_reply_condition = String(replyAssignment.condition || "").slice(0, 500);
+    merged.api_campaign_reply_pending = sameRouteAlreadyCompleted ? false : status !== "failed";
+    if (sameRouteAlreadyCompleted) {
+      merged.api_campaign_reply_assigned_at = attrs.api_campaign_reply_assigned_at;
+      if (attrs.api_campaign_reply_assignee_id) {
+        merged.api_campaign_reply_assignee_id = attrs.api_campaign_reply_assignee_id;
+        merged.api_campaign_reply_assignee_name = attrs.api_campaign_reply_assignee_name || "";
+      }
+    } else {
+      delete merged.api_campaign_reply_assigned_at;
+      delete merged.api_campaign_reply_assignee_id;
+      delete merged.api_campaign_reply_assignee_name;
+    }
   } else {
     delete merged.api_campaign_reply_assign_mode;
     delete merged.api_campaign_reply_team_id;
     delete merged.api_campaign_reply_team_name;
     delete merged.api_campaign_reply_inbox_id;
     delete merged.api_campaign_reply_assignment_key;
+    delete merged.api_campaign_reply_rule_id;
+    delete merged.api_campaign_reply_rule_name;
+    delete merged.api_campaign_reply_condition;
     delete merged.api_campaign_reply_assigned_at;
     delete merged.api_campaign_reply_assignee_id;
     delete merged.api_campaign_reply_assignee_name;
@@ -74,6 +98,31 @@ export function buildCampaignMarkerAttributes({
   }
 
   return merged;
+}
+
+function copyReplyRouteAttributes(target, source) {
+  const keys = [
+    "api_campaign_reply_assign_mode",
+    "api_campaign_reply_team_id",
+    "api_campaign_reply_team_name",
+    "api_campaign_reply_inbox_id",
+    "api_campaign_reply_assignment_key",
+    "api_campaign_reply_rule_id",
+    "api_campaign_reply_rule_name",
+    "api_campaign_reply_condition",
+    "api_campaign_reply_pending",
+    "api_campaign_reply_assigned_at",
+    "api_campaign_reply_assignee_id",
+    "api_campaign_reply_assignee_name",
+  ];
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) target[key] = source[key];
+    else delete target[key];
+  }
+}
+
+function isTruthy(value) {
+  return value === true || String(value).trim().toLowerCase() === "true";
 }
 
 function parseFutureDate(value, now) {

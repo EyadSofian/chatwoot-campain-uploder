@@ -58,7 +58,10 @@ test('reply assignment markers store the selected team until the customer replie
       teamId: '77',
       teamName: 'Sales',
       inboxId: '24',
-      assignmentKey: 'api_sent_june_welcome:24:123'
+      assignmentKey: 'api_sent_june_welcome:24:123',
+      ruleId: 'revit',
+      ruleName: 'Revit leads',
+      condition: 'department equals Revit'
     }
   });
 
@@ -67,6 +70,9 @@ test('reply assignment markers store the selected team until the customer replie
   assert.equal(attrs.api_campaign_reply_team_name, 'Sales');
   assert.equal(attrs.api_campaign_reply_inbox_id, '24');
   assert.equal(attrs.api_campaign_reply_assignment_key, 'api_sent_june_welcome:24:123');
+  assert.equal(attrs.api_campaign_reply_rule_id, 'revit');
+  assert.equal(attrs.api_campaign_reply_rule_name, 'Revit leads');
+  assert.equal(attrs.api_campaign_reply_condition, 'department equals Revit');
   assert.equal(attrs.api_campaign_reply_pending, true);
   assert.equal(attrs.api_campaign_reply_assigned_at, undefined);
 });
@@ -104,6 +110,62 @@ test('a failed new send does not shorten an already active successful campaign m
 
   assert.equal(attrs.api_campaign_status, 'failed');
   assert.equal(attrs.api_campaign_active_until, '2026-06-20T10:00:00.000Z');
+});
+
+test('a failed new send preserves a previous active reply route', () => {
+  const now = new Date('2026-06-15T10:00:00.000Z');
+  const attrs = buildCampaignMarkerAttributes({
+    attrs: {
+      api_campaign_status: 'sent',
+      api_campaign_active_until: '2026-06-20T10:00:00.000Z',
+      api_campaign_reply_assign_mode: 'on_reply_team',
+      api_campaign_reply_team_id: '77',
+      api_campaign_reply_team_name: 'Sales',
+      api_campaign_reply_pending: true,
+      api_campaign_reply_rule_id: 'old-route'
+    },
+    labelName: 'new-campaign',
+    templateName: 'new-template',
+    status: 'failed',
+    now,
+    error: 'delivery failed',
+    replyAssignment: {
+      mode: 'on_reply_team',
+      teamId: '88',
+      teamName: 'Another team'
+    }
+  });
+
+  assert.equal(attrs.api_campaign_reply_pending, true);
+  assert.equal(attrs.api_campaign_reply_team_id, '77');
+  assert.equal(attrs.api_campaign_reply_rule_id, 'old-route');
+});
+
+test('finalizing the same route does not reactivate it after a fast customer reply', () => {
+  const attrs = buildCampaignMarkerAttributes({
+    attrs: {
+      api_campaign_reply_assignment_key: 'campaign:24:123',
+      api_campaign_reply_pending: false,
+      api_campaign_reply_assigned_at: '2026-06-15T10:00:01.000Z',
+      api_campaign_reply_assignee_id: '9',
+      api_campaign_reply_assignee_name: 'Nour'
+    },
+    campaignKey: 'api_sent_june_welcome',
+    labelName: 'june_welcome',
+    templateName: 'welcome',
+    status: 'sent',
+    now: new Date('2026-06-15T10:00:02.000Z'),
+    replyAssignment: {
+      mode: 'on_reply_team',
+      teamId: '77',
+      teamName: 'Sales',
+      assignmentKey: 'campaign:24:123'
+    }
+  });
+
+  assert.equal(attrs.api_campaign_reply_pending, false);
+  assert.equal(attrs.api_campaign_reply_assigned_at, '2026-06-15T10:00:01.000Z');
+  assert.equal(attrs.api_campaign_reply_assignee_id, '9');
 });
 
 test('campaign marker TTL defaults to thirty days and rejects invalid values', () => {

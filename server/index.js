@@ -100,4 +100,9 @@ app.use('/api/v1', (req, res) => {
   req.pipe(proxy, { end: true });
 });
 
-app.listen(PORT, () => console.log(`Running on port ${PORT} → ${CHATWOOT_URL}`));
+app.listen(PORT, () => {
+  console.log(`Running on port ${PORT} → ${CHATWOOT_URL}`);
+  if (!String(process.env.WEBHOOK_SECRET || '').trim()) {
+    console.warn('WEBHOOK_SECRET is not configured; the Chatwoot reply-routing webhook is unauthenticated.');
+  }
+});

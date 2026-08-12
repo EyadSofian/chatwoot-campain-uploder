@@ -8,7 +8,7 @@ Dashboard app for Chatwoot self-hosted that can:
 - Sync WhatsApp inboxes from Chatwoot.
 - Sync WhatsApp templates through Chatwoot.
 - Send WhatsApp template campaigns through Chatwoot API in safe test mode, so the campaign message appears in the conversation.
-- Defer assignment until the customer replies, then distribute replies round-robin across a selected Chatwoot team.
+- Send campaigns unassigned, then route the first customer reply to a fixed Team or to a Team selected by ordered Label/Custom Attribute rules.
 - Run contact uploads and WhatsApp sends as server-side background jobs, with uploads separated from send queues.
 - Search saved campaign jobs by label/campaign name, operator, status, or template name.
 
@@ -57,14 +57,28 @@ replies.
 
 1. In the assignment panel, enable automatic assignment.
 2. Choose `Team` as the target.
-3. Choose `وزّع على أعضاء Team عند رد العميل`.
+3. Choose either `Team ثابت عند رد العميل` or `شروط Label / Custom Attribute عند الرد`.
 4. Click `Sync Teams`.
-5. Pick the team that should receive the replies.
+5. For a fixed route, pick one Team. For conditional routing, add ordered rules and select a Target Team for each rule. The first matching rule wins; put the optional fallback last.
 6. Send the campaign as a background job.
 
 When the customer replies, Chatwoot sends a webhook to the app. The app checks
-the campaign marker on the conversation and assigns it to the next confirmed
-member of the selected team using round-robin distribution.
+the campaign marker on the conversation and assigns the Team stored there. If
+that Team has Auto Assign enabled, Chatwoot applies its own availability and
+capacity policy to select an agent.
+
+The Label and Custom Attribute used by the router are the same values configured
+in the campaign form. The route is resolved when the campaign row is prepared,
+then stored on the conversation. This makes the first-reply webhook deterministic
+even if the CSV or dashboard rules change later. The campaign Label is also added
+to the conversation while preserving existing conversation labels.
+
+Before sending, the app clears any existing Team/Agent assignment on the target
+conversation. If sending fails, the previous assignment is restored. A successful
+campaign stays unassigned until the first public incoming message arrives.
+Campaign marker updates and first-reply handling share a per-conversation lock,
+so the implementation stays compatible with older Chatwoot installations while
+protecting very fast replies from being reactivated by a late send update.
 
 Add this webhook in Chatwoot:
 

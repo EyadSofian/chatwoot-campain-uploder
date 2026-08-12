@@ -7,6 +7,11 @@ import {
   getCampaignMarkerTtlSeconds,
   getCampaignPendingMarkerTtlSeconds
 } from './campaignMarkers.js';
+import {
+  normalizeReplyRoutingRules,
+  resolveReplyRoutingRule,
+} from './replyRoutingRules.js';
+import { withConversationLock } from './conversationLocks.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -453,6 +458,8 @@ async function runSendJob(job, runtime) {
   if (!inboxId) throw new Error('WhatsApp inbox is required');
   if (!templateName) throw new Error('Template name is required');
   assertReplyAssignmentSettings(settings);
+  await ensureLabel(job, runtime.config, labelName);
+  await assertReplyAssignmentTeamsExist(job, runtime);
   if (attrCol) ensureColumnExists(rows, attrCol, 'Custom attribute column');
   assertTemplateMappings(rows, settings);
 
@@ -526,6 +533,7 @@ function normalizeSettings(settings) {
     fixedTargetId: String(settings.fixedTargetId || '').trim(),
     fixedTargetName: String(settings.fixedTargetName || '').trim().slice(0, 120),
     assignmentMap: settings.assignmentMap && typeof settings.assignmentMap === 'object' ? settings.assignmentMap : {},
+    replyRoutingRules: normalizeReplyRoutingRules(settings.replyRoutingRules),
     operatorName: String(settings.operatorName || '').trim().slice(0, 80),
   };
 }
@@ -740,6 +748,9 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
   if (!result) throw new Error('Contact was not found/created');
   await assignLabel(job, config, result.id, settings.labelName, row.name || row.phone_number, result.isNew, result.existingLabels);
 
+  const contactLabels = [...new Set([...(result.existingLabels || []), settings.labelName].filter(Boolean))];
+  const replyAssignment = buildReplyAssignment(settings, campaignKey, result.id, row, contactLabels);
+
   const markerTtlSeconds = getCampaignMarkerTtlSeconds(settings.campaignMarkerTtlSeconds);
   const pendingMarkerTtlSeconds = getCampaignPendingMarkerTtlSeconds(settings.campaignPendingMarkerTtlSeconds);
   const marker = {
@@ -748,7 +759,7 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     templateName: settings.templateName,
     ttlSeconds: markerTtlSeconds,
     pendingTtlSeconds: pendingMarkerTtlSeconds,
-    replyAssignment: buildReplyAssignment(settings, campaignKey, result.id)
+    replyAssignment
   };
   const conv = await ensureCampaignConversation(job, runtime, result.id, row, marker);
   const details = await getConversationDetails(job, config, conv.id);
@@ -760,7 +771,16 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     return { status: 'skipped', convId: conv.id };
   }
 
-  let markerAttrs = await updateCampaignMarker(job, config, conv.id, {
+  await assignConversationLabel(job, config, conv.id, settings.labelName, details?.labels);
+
+  // Opening a pending/resolved conversation can trigger Chatwoot's inbox-level
+  // auto assignment. Apply the requested status first, then explicitly clear
+  // any resulting assignment before the campaign marker and message are sent.
+  if (isDeferredReplyAssignment(settings)) {
+    await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
+  }
+
+  let markerAttrs = await updateCampaignMarkerSafely(job, config, conv.id, {
     attrs,
     ...marker,
     status: 'pending',
@@ -768,7 +788,13 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
 
   const payload = buildTemplatePayload(row, settings);
   let r;
+  let previousAssignment = null;
   try {
+    if (isDeferredReplyAssignment(settings)) {
+      const currentDetails = await getConversationDetails(job, config, conv.id);
+      previousAssignment = await clearConversationAssignment(job, config, conv.id, currentDetails || details);
+    }
+
     r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conv.id}/messages`, 'POST', payload, 3);
     if (!r.ok) throw new Error(`Template send failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
 
@@ -778,7 +804,7 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     }
   } catch (error) {
     try {
-      await updateCampaignMarker(job, config, conv.id, {
+      await updateCampaignMarkerSafely(job, config, conv.id, {
         attrs,
         ...marker,
         status: 'failed',
@@ -787,11 +813,16 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     } catch (markerError) {
       await logJob(job, `Campaign failure marker could not be saved for conversation #${conv.id}: ${markerError.message}`, 'warn');
     }
+    if (previousAssignment?.changed) {
+      await restoreConversationAssignment(job, config, conv.id, previousAssignment).catch(async (restoreError) => {
+        await logJob(job, `Previous assignment could not be restored for conversation #${conv.id}: ${restoreError.message}`, 'warn');
+      });
+    }
     throw error;
   }
 
   try {
-    markerAttrs = await updateCampaignMarker(job, config, conv.id, {
+    markerAttrs = await updateCampaignMarkerSafely(job, config, conv.id, {
       attrs: markerAttrs,
       ...marker,
       status: 'sent',
@@ -802,7 +833,9 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     await logJob(job, `Template sent but final campaign marker failed for conversation #${conv.id}: ${error.message}`, 'warn');
   }
   await assignConversation(job, runtime, conv.id, row);
-  await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
+  if (!isDeferredReplyAssignment(settings)) {
+    await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
+  }
   await logJob(job, `Template sent and recorded in conversation #${conv.id}`, 'ok');
   return { status: 'sent', convId: conv.id, msgId: r.data?.id };
 }
@@ -872,6 +905,111 @@ async function getConversationDetails(job, config, conversationId) {
   return r.ok ? (r.data.payload || r.data) : null;
 }
 
+async function assignConversationLabel(job, config, conversationId, label, knownLabels = null) {
+  let existing = normalizeLabelList(knownLabels);
+  if (!Array.isArray(knownLabels)) {
+    const current = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/labels`, 'GET');
+    if (!current.ok) {
+      throw new Error(`Conversation labels could not be loaded for #${conversationId}: HTTP ${current.status} ${JSON.stringify(current.data)}`);
+    }
+    existing = normalizeLabelList(current.data?.payload);
+  }
+  if (existing.includes(label)) return true;
+
+  const updated = [...new Set([...existing, label])];
+  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/labels`, 'POST', {
+    labels: updated,
+  });
+  if (!r.ok) {
+    throw new Error(`Conversation label failed for #${conversationId}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+  await logJob(job, `Campaign label added to conversation #${conversationId}: ${label}`, 'info');
+  return true;
+}
+
+async function clearConversationAssignment(job, config, conversationId, conversation) {
+  const previous = extractConversationAssignment(conversation);
+  previous.changed = Boolean(previous.assigneeId || previous.teamId);
+  if (!previous.changed) return previous;
+
+  try {
+    if (previous.assigneeId) {
+      const agentResult = await cwFetch(
+        job,
+        config,
+        `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/assignments`,
+        'POST',
+        { assignee_id: 0 }
+      );
+      if (!agentResult.ok) throw new Error(`agent unassign HTTP ${agentResult.status} ${JSON.stringify(agentResult.data)}`);
+    }
+    if (previous.teamId) {
+      const teamResult = await cwFetch(
+        job,
+        config,
+        `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/assignments`,
+        'POST',
+        { team_id: 0 }
+      );
+      if (!teamResult.ok) throw new Error(`team unassign HTTP ${teamResult.status} ${JSON.stringify(teamResult.data)}`);
+    }
+  } catch (error) {
+    await restoreConversationAssignment(job, config, conversationId, previous).catch(() => {});
+    throw new Error(`Conversation #${conversationId} could not be left unassigned before send: ${error.message}`);
+  }
+
+  await logJob(job, `Conversation #${conversationId} left unassigned until the customer replies`, 'info');
+  return previous;
+}
+
+async function restoreConversationAssignment(job, config, conversationId, previous) {
+  if (previous.teamId) {
+    const teamResult = await cwFetch(
+      job,
+      config,
+      `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/assignments`,
+      'POST',
+      { team_id: Number(previous.teamId) }
+    );
+    if (!teamResult.ok) throw new Error(`team restore HTTP ${teamResult.status} ${JSON.stringify(teamResult.data)}`);
+  }
+  if (previous.assigneeId) {
+    const agentResult = await cwFetch(
+      job,
+      config,
+      `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/assignments`,
+      'POST',
+      { assignee_id: Number(previous.assigneeId) }
+    );
+    if (!agentResult.ok) throw new Error(`agent restore HTTP ${agentResult.status} ${JSON.stringify(agentResult.data)}`);
+  }
+  await logJob(job, `Previous assignment restored for conversation #${conversationId} after send failure`, 'info');
+}
+
+function extractConversationAssignment(conversation = {}) {
+  return {
+    assigneeId: String(
+      conversation?.assignee_id
+      ?? conversation?.meta?.assignee?.id
+      ?? conversation?.assignee?.id
+      ?? ''
+    ).trim(),
+    teamId: String(
+      conversation?.team_id
+      ?? conversation?.meta?.team?.id
+      ?? conversation?.team?.id
+      ?? ''
+    ).trim(),
+  };
+}
+
+function normalizeLabelList(labels) {
+  return (Array.isArray(labels) ? labels : [])
+    .map((label) => typeof label === 'string' ? label : (label?.title || label?.name || ''))
+    .map((label) => String(label).trim())
+    .filter(Boolean);
+}
+
 async function updateCampaignMarker(job, config, conversationId, marker) {
   const merged = buildCampaignMarkerAttributes(marker);
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
@@ -881,6 +1019,28 @@ async function updateCampaignMarker(job, config, conversationId, marker) {
     throw new Error(`Campaign marker failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
   }
   return r.data?.custom_attributes || r.data?.payload?.custom_attributes || merged;
+}
+
+async function updateCampaignMarkerSafely(job, config, conversationId, marker) {
+  if (!marker.replyAssignment) {
+    return updateCampaignMarker(job, config, conversationId, marker);
+  }
+
+  return withConversationLock(config.accountId, conversationId, async () => {
+    const latest = await requireConversationDetails(job, config, conversationId);
+    return updateCampaignMarker(job, config, conversationId, {
+      ...marker,
+      attrs: latest.custom_attributes || {},
+    });
+  });
+}
+
+async function requireConversationDetails(job, config, conversationId) {
+  const details = await getConversationDetails(job, config, conversationId);
+  if (!details) {
+    throw new Error(`Conversation #${conversationId} could not be refreshed while finalizing its campaign marker`);
+  }
+  return details;
 }
 
 async function applyPostSendConversationStatus(job, runtime, conversationId, currentStatus = '') {
@@ -913,7 +1073,7 @@ async function applyPostSendConversationStatus(job, runtime, conversationId, cur
 async function assignConversation(job, runtime, conversationId, row) {
   const { config, settings } = runtime;
   if (!settings.autoAssign) return true;
-  if (settings.assignmentMode === 'on_reply_team') {
+  if (isDeferredReplyAssignment(settings)) {
     await logJob(job, `Assignment deferred until customer reply for conversation #${conversationId}`, 'info');
     return true;
   }
@@ -1059,24 +1219,96 @@ function resolveAssignmentTarget(row, settings) {
 }
 
 function assertReplyAssignmentSettings(settings) {
-  if (!settings.autoAssign || settings.assignmentMode !== 'on_reply_team') return;
+  if (!isDeferredReplyAssignment(settings)) return;
   if (settings.assignmentTargetType !== 'team') {
     throw new Error('Reply-based assignment requires Team target type');
   }
-  if (!settings.fixedTargetId) {
+  if (settings.assignmentMode === 'on_reply_team' && !settings.fixedTargetId) {
     throw new Error('Reply-based assignment requires selecting a Team');
+  }
+  if (settings.assignmentMode === 'on_reply_rules') {
+    if (!settings.replyRoutingRules.length) {
+      throw new Error('Reply routing requires at least one valid Label, Custom Attribute, or fallback rule');
+    }
+    const fallbackCount = settings.replyRoutingRules.filter((rule) => rule.conditionType === 'fallback').length;
+    if (fallbackCount > 1) throw new Error('Reply routing supports only one fallback rule');
+    const fallbackIndex = settings.replyRoutingRules.findIndex((rule) => rule.conditionType === 'fallback');
+    if (fallbackIndex >= 0 && fallbackIndex !== settings.replyRoutingRules.length - 1) {
+      throw new Error('Reply routing fallback rule must be last');
+    }
+    const mismatchedAttribute = settings.replyRoutingRules.find((rule) => (
+      rule.conditionType === 'custom_attribute' && rule.attributeKey !== settings.attrCol
+    ));
+    if (mismatchedAttribute) {
+      throw new Error(`Reply rule "${mismatchedAttribute.name}" must use the configured Custom Attribute column "${settings.attrCol}"`);
+    }
   }
 }
 
-function buildReplyAssignment(settings, campaignKey, contactId) {
-  if (!settings.autoAssign || settings.assignmentMode !== 'on_reply_team') return null;
+async function assertReplyAssignmentTeamsExist(job, runtime) {
+  const { config, settings } = runtime;
+  if (!isDeferredReplyAssignment(settings)) return;
+
+  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/teams`, 'GET');
+  if (!r.ok) {
+    throw new Error(`Reply-routing Teams could not be verified: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+  const teams = Array.isArray(r.data) ? r.data : (r.data?.payload || []);
+  const availableIds = new Set(teams.map((team) => String(team?.id || '')).filter(Boolean));
+  const targetIds = settings.assignmentMode === 'on_reply_rules'
+    ? settings.replyRoutingRules.map((rule) => String(rule.teamId))
+    : [String(settings.fixedTargetId)];
+  const missing = [...new Set(targetIds.filter((id) => !availableIds.has(id)))];
+  if (missing.length) {
+    throw new Error(`Reply-routing Team IDs do not exist in Chatwoot: ${missing.join(', ')}`);
+  }
+}
+
+function buildReplyAssignment(settings, campaignKey, contactId, row, labels) {
+  if (!isDeferredReplyAssignment(settings)) return null;
+
+  if (settings.assignmentMode === 'on_reply_rules') {
+    const route = resolveReplyRoutingRule(settings.replyRoutingRules, {
+      campaignLabel: settings.labelName,
+      labels,
+      customAttributes: settings.attrCol ? { [settings.attrCol]: row[settings.attrCol] } : {},
+      row,
+    });
+    if (!route) {
+      throw new Error(`No reply-routing rule matched ${row.name || row.phone_number || `contact #${contactId}`}`);
+    }
+    return {
+      mode: 'on_reply_team',
+      teamId: route.teamId,
+      teamName: route.teamName,
+      inboxId: settings.inboxId,
+      assignmentKey: `${campaignKey}:${settings.inboxId}:${contactId}`,
+      ruleId: route.id,
+      ruleName: route.name,
+      condition: describeReplyRoutingRule(route),
+    };
+  }
+
   return {
     mode: 'on_reply_team',
     teamId: settings.fixedTargetId,
     teamName: settings.fixedTargetName,
     inboxId: settings.inboxId,
     assignmentKey: `${campaignKey}:${settings.inboxId}:${contactId}`,
+    ruleId: 'fixed_team',
+    ruleName: 'Fixed reply Team',
+    condition: 'all campaign replies',
   };
+}
+
+function isDeferredReplyAssignment(settings) {
+  return Boolean(settings.autoAssign && ['on_reply_team', 'on_reply_rules'].includes(settings.assignmentMode));
+}
+
+function describeReplyRoutingRule(rule) {
+  if (rule.conditionType === 'fallback') return 'fallback';
+  if (rule.conditionType === 'label') return `label ${rule.operator} ${rule.value}`;
+  return `${rule.attributeKey} ${rule.operator} ${rule.value}`;
 }
 
 function buildTemplatePayload(row, settings) {
