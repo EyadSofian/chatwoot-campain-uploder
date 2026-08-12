@@ -22,8 +22,9 @@ const rules = [
     attributeKey: 'department',
     operator: 'equals',
     value: 'BIM',
-    teamId: '22',
-    teamName: 'BIM Sales',
+    targetType: 'agent',
+    targetId: '22',
+    targetName: 'Ahmed',
   },
   {
     id: 'fallback',
@@ -41,6 +42,8 @@ test('reply routing rules use first-match priority and match campaign labels', (
   });
 
   assert.equal(match.id, 'campaign_label');
+  assert.equal(match.targetType, 'team');
+  assert.equal(match.targetId, '17');
   assert.equal(match.teamId, '17');
 });
 
@@ -51,7 +54,10 @@ test('reply routing rules match the existing contact custom attribute column', (
   });
 
   assert.equal(match.id, 'department');
-  assert.equal(match.teamId, '22');
+  assert.equal(match.targetType, 'agent');
+  assert.equal(match.targetId, '22');
+  assert.equal(match.targetName, 'Ahmed');
+  assert.equal(match.teamId, '');
 });
 
 test('reply routing rules fall back when no label or custom attribute matches', () => {
@@ -61,12 +67,14 @@ test('reply routing rules fall back when no label or custom attribute matches', 
   });
 
   assert.equal(match.id, 'fallback');
+  assert.equal(match.targetType, 'team');
   assert.equal(match.teamId, '30');
 });
 
 test('invalid, disabled, or targetless rules are removed during normalization', () => {
   const normalized = normalizeReplyRoutingRules([
     { conditionType: 'label', value: 'x', teamId: '' },
+    { conditionType: 'label', value: 'x', targetType: 'agent', targetId: 'not-a-number' },
     { enabled: false, conditionType: 'fallback', teamId: '2' },
     { conditionType: 'unknown', teamId: '3' },
     rules[0],

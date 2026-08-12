@@ -28,6 +28,8 @@ test('reply router reads the resolved Team and routing-rule audit fields', () =>
   }, new Date('2026-06-15T10:00:00.000Z'));
 
   assert.equal(marker.active, true);
+  assert.equal(marker.targetType, 'team');
+  assert.equal(marker.targetId, '77');
   assert.equal(marker.teamId, '77');
   assert.equal(marker.teamName, 'Sales');
   assert.equal(marker.ruleId, 'revit');
@@ -113,5 +115,65 @@ test('first incoming reply assigns the resolved Team and completes the marker', 
   assert.deepEqual(requests[1].body, { team_id: 77 });
   assert.match(requests[1].url, /\/conversations\/900\/assignments$/);
   assert.equal(requests[3].body.custom_attributes.api_campaign_reply_pending, false);
+  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_target_type, 'team');
   assert.equal(requests[3].body.custom_attributes.api_campaign_reply_assignee_id, '12');
+});
+
+test('first incoming reply can assign one specific Agent', async (t) => {
+  const originalFetch = global.fetch;
+  const originalUrl = process.env.CHATWOOT_URL;
+  const originalToken = process.env.CHATWOOT_API_TOKEN;
+  process.env.CHATWOOT_URL = 'https://chatwoot.test';
+  process.env.CHATWOOT_API_TOKEN = 'test-token';
+
+  t.after(() => {
+    global.fetch = originalFetch;
+    if (originalUrl === undefined) delete process.env.CHATWOOT_URL;
+    else process.env.CHATWOOT_URL = originalUrl;
+    if (originalToken === undefined) delete process.env.CHATWOOT_API_TOKEN;
+    else process.env.CHATWOOT_API_TOKEN = originalToken;
+  });
+
+  const markerAttributes = {
+    api_campaign_reply_assign_mode: 'on_reply_target',
+    api_campaign_reply_target_type: 'agent',
+    api_campaign_reply_target_id: '42',
+    api_campaign_reply_target_name: 'Ahmed',
+    api_campaign_reply_pending: true,
+    api_campaign_reply_rule_id: 'revit-agent',
+    api_campaign_active_until: '2099-06-20T10:00:00.000Z',
+  };
+  const requests = [];
+
+  global.fetch = async (url, options = {}) => {
+    const method = options.method || 'GET';
+    const body = options.body ? JSON.parse(options.body) : null;
+    requests.push({ url: String(url), method, body });
+
+    if (method === 'GET' && String(url).endsWith('/conversations/901')) {
+      return new Response(JSON.stringify({
+        id: 901,
+        status: 'open',
+        custom_attributes: markerAttributes,
+        meta: requests.length > 2 ? { assignee: { id: 42, name: 'Ahmed' } } : {},
+      }), { status: 200 });
+    }
+    return new Response('{}', { status: 200 });
+  };
+
+  const result = await handleChatwootWebhook({
+    event: 'message_created',
+    message_type: 'incoming',
+    account: { id: 2 },
+    conversation: { id: 901 },
+  });
+
+  assert.equal(result.status, 'assigned');
+  assert.equal(result.targetType, 'agent');
+  assert.equal(result.targetId, '42');
+  assert.equal(result.teamId, '');
+  assert.equal(result.assigneeId, '42');
+  assert.deepEqual(requests[1].body, { assignee_id: 42 });
+  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_target_type, 'agent');
+  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_team_id, undefined);
 });

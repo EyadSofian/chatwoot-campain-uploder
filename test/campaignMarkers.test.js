@@ -44,7 +44,7 @@ test('sent campaign markers retain the active window and add the duplicate key',
   assert.equal(attrs.api_campaign_active_until, '2026-06-15T11:00:00.000Z');
 });
 
-test('reply assignment markers store the selected team until the customer replies', () => {
+test('legacy Team assignments are upgraded to generic target markers', () => {
   const now = new Date('2026-06-15T10:00:00.000Z');
   const attrs = buildCampaignMarkerAttributes({
     campaignKey: 'api_sent_june_welcome',
@@ -65,7 +65,10 @@ test('reply assignment markers store the selected team until the customer replie
     }
   });
 
-  assert.equal(attrs.api_campaign_reply_assign_mode, 'on_reply_team');
+  assert.equal(attrs.api_campaign_reply_assign_mode, 'on_reply_target');
+  assert.equal(attrs.api_campaign_reply_target_type, 'team');
+  assert.equal(attrs.api_campaign_reply_target_id, '77');
+  assert.equal(attrs.api_campaign_reply_target_name, 'Sales');
   assert.equal(attrs.api_campaign_reply_team_id, '77');
   assert.equal(attrs.api_campaign_reply_team_name, 'Sales');
   assert.equal(attrs.api_campaign_reply_inbox_id, '24');
@@ -75,6 +78,32 @@ test('reply assignment markers store the selected team until the customer replie
   assert.equal(attrs.api_campaign_reply_condition, 'department equals Revit');
   assert.equal(attrs.api_campaign_reply_pending, true);
   assert.equal(attrs.api_campaign_reply_assigned_at, undefined);
+});
+
+test('reply assignment markers can route the first reply to one Agent', () => {
+  const attrs = buildCampaignMarkerAttributes({
+    campaignKey: 'api_sent_agent_campaign',
+    labelName: 'agent_campaign',
+    templateName: 'welcome',
+    status: 'sent',
+    now: new Date('2026-06-15T10:00:00.000Z'),
+    ttlSeconds: 3600,
+    replyAssignment: {
+      mode: 'on_reply_target',
+      targetType: 'agent',
+      targetId: '42',
+      targetName: 'Ahmed',
+      inboxId: '24',
+      assignmentKey: 'api_sent_agent_campaign:24:123',
+    }
+  });
+
+  assert.equal(attrs.api_campaign_reply_assign_mode, 'on_reply_target');
+  assert.equal(attrs.api_campaign_reply_target_type, 'agent');
+  assert.equal(attrs.api_campaign_reply_target_id, '42');
+  assert.equal(attrs.api_campaign_reply_target_name, 'Ahmed');
+  assert.equal(attrs.api_campaign_reply_team_id, undefined);
+  assert.equal(attrs.api_campaign_reply_pending, true);
 });
 
 test('failed markers expire immediately so an unsent campaign does not block normal routing', () => {

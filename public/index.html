@@ -185,9 +185,16 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .reply-rules-kicker{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--brand);margin-bottom:3px}
 .reply-rules-title{font-size:13px;font-weight:800;color:var(--text)}
 .reply-rules-copy{font-size:11px;color:var(--muted);line-height:1.55;margin-top:3px;max-width:520px}
+.reply-sync-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .reply-rule-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.reply-examples{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:9px;border:1px dashed var(--brand-line);border-radius:10px;background:var(--surface)}
+.reply-example{min-width:0;padding:8px 9px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line)}
+.reply-example-condition{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.reply-example-target{display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;font-weight:800;color:var(--text)}
+.reply-example-arrow{color:var(--brand);font-weight:900}
+.reply-example-note{grid-column:1/-1;font-size:10px;line-height:1.5;color:var(--muted);padding:0 2px}
 .reply-rule-list{display:grid;gap:8px}
-.reply-rule{display:grid;grid-template-columns:34px minmax(0,.9fr) minmax(0,.8fr) minmax(0,1fr) minmax(0,1.1fr) auto;gap:7px;align-items:end;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 6px 18px rgba(15,23,42,.05)}
+.reply-rule{display:grid;grid-template-columns:34px minmax(0,.8fr) minmax(0,.8fr) minmax(0,.9fr) minmax(96px,.55fr) minmax(0,1.05fr) auto;gap:7px;align-items:end;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:0 6px 18px rgba(15,23,42,.05)}
 .reply-rule-order{align-self:center;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:var(--brand-soft);color:var(--brand);font-size:10px;font-weight:900;border:1px solid var(--brand-line)}
 .reply-rule .field{margin:0;min-width:0}
 .reply-rule .field label{font-size:9px;text-transform:uppercase;letter-spacing:.06em}
@@ -212,7 +219,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-pill.failed,.job-pill.completed_with_errors{color:var(--err);border-color:var(--err);background:var(--err-soft)}
 .job-pill.interrupted{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,.12)}
 @media(max-width:520px){.assign-actions,.agent-map-row{grid-template-columns:1fr}.agent-map-arrow{display:none}}
-@media(max-width:760px){.reply-rule{grid-template-columns:34px 1fr 1fr}.reply-rule-tools{grid-column:2/-1;justify-content:flex-end}.reply-rule-actions{grid-template-columns:1fr}.reply-rules-head{flex-direction:column}}
+@media(max-width:760px){.reply-rule{grid-template-columns:34px 1fr 1fr}.reply-rule-tools{grid-column:2/-1;justify-content:flex-end}.reply-rule-actions,.reply-examples{grid-template-columns:1fr}.reply-rules-head{flex-direction:column}.reply-sync-actions{justify-content:flex-start}.reply-example-note{grid-column:1}}
 @media(max-width:520px){.reply-rule{grid-template-columns:1fr}.reply-rule-order{display:none}.reply-rule-tools{grid-column:1}}
 @media(max-width:520px){.job-actions,.job-row{grid-template-columns:1fr}}
 @media(max-width:520px){.header{flex-wrap:wrap}.badge{margin-right:0}.theme-btn{flex:1}}
@@ -227,7 +234,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v1.14 First-Reply Routing</div>
+    <div class="badge">v1.15 Agent + Team Routing</div>
     <button class="secondary theme-btn" id="themeBtn" type="button">Dark</button>
   </div>
 
@@ -416,7 +423,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       </div>
       <div id="assignPanelBody">
         <div class="row">
-          <div class="field">
+          <div class="field" id="assignTargetTypeWrap">
             <label>نوع التوزيع</label>
             <select id="assignTargetType" onchange="handleAssignmentTargetTypeChange()">
               <option value="agent">Agent</option>
@@ -428,7 +435,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
             <select id="assignMode" onchange="toggleAssignmentPanel()">
               <option value="by_csv">حسب قيمة في CSV</option>
               <option value="fixed_agent">نفس الاختيار لكل الحملة</option>
-              <option value="on_reply_team">Team ثابت عند رد العميل</option>
+              <option value="on_reply_team">Target ثابت عند رد العميل</option>
               <option value="on_reply_rules">شروط Label / Custom Attribute عند الرد</option>
             </select>
           </div>
@@ -457,15 +464,33 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
           <div class="reply-rules-head">
             <div>
               <div class="reply-rules-kicker">First reply router</div>
-              <div class="reply-rules-title">حوّل أول رد للتيم المناسب</div>
-              <div class="reply-rules-copy">الـLabel والـCustom Attribute هما نفس القيم اللي بتجهزهم فوق. القواعد تتنفذ بالترتيب، وأول Match هو اللي يكسب.</div>
+              <div class="reply-rules-title">حوّل أول رد للمسؤول المناسب</div>
+              <div class="reply-rules-copy">كل Rule تقدر توجهها لـAgent محدد أو Team كامل. الـLabel والـCustom Attribute هما نفس القيم اللي بتجهزهم فوق، وأول Match هو اللي يكسب.</div>
             </div>
-            <button class="secondary" type="button" onclick="syncTeams()">Sync Teams</button>
+            <div class="reply-sync-actions">
+              <button class="secondary" type="button" onclick="syncInboxAgents()">Sync Agents</button>
+              <button class="secondary" type="button" onclick="syncTeams()">Sync Teams</button>
+            </div>
           </div>
           <div class="reply-rule-actions">
             <button class="secondary" type="button" onclick="addReplyRoutingRule('label')">+ شرط Label</button>
             <button class="secondary" type="button" onclick="addReplyRoutingRule('custom_attribute')">+ شرط Custom Attr</button>
-            <button class="secondary" type="button" onclick="addReplyRoutingRule('fallback')">+ Team افتراضي</button>
+            <button class="secondary" type="button" onclick="addReplyRoutingRule('fallback')">+ Target افتراضي</button>
+          </div>
+          <div class="reply-examples" aria-label="Reply routing examples">
+            <div class="reply-example">
+              <div class="reply-example-condition">Label = revit_august</div>
+              <div class="reply-example-target"><span class="reply-example-arrow">←</span> Agent: Ahmed</div>
+            </div>
+            <div class="reply-example">
+              <div class="reply-example-condition">course_type = BIM</div>
+              <div class="reply-example-target"><span class="reply-example-arrow">←</span> Team: BIM Sales</div>
+            </div>
+            <div class="reply-example">
+              <div class="reply-example-condition">Fallback — باقي العملاء</div>
+              <div class="reply-example-target"><span class="reply-example-arrow">←</span> Team: General Sales</div>
+            </div>
+            <div class="reply-example-note">مثال: لو العميل عليه Label الحملة الأولى، أول رد يروح مباشرة لأحمد. ولو قيمة الـCustom Attribute هي BIM يروح للتيم. حط الـFallback آخر Rule دائماً.</div>
           </div>
           <div id="replyRuleList" class="reply-rule-list"></div>
           <div id="replyRuleStatus" class="reply-rule-status">أضف قاعدة واحدة على الأقل.</div>
@@ -640,6 +665,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 <script>
 let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
 let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [], agentAssignments = {};
+let syncedAgentsInboxId = '';
 let replyRoutingRules = [];
 let activeServerJobId = null, serverJobPollTimer = null, serverLogOffset = 0;
 // يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
@@ -2006,6 +2032,15 @@ document.addEventListener('DOMContentLoaded', () => {
     agentAssignments = {};
     if (currentAssignmentTargets().length && csvData.length) buildAgentMappingUI();
   });
+  const sendInboxInput = $('sendInboxId');
+  if (sendInboxInput) sendInboxInput.addEventListener('input', () => {
+    if (sendInboxInput.value.trim() === syncedAgentsInboxId) return;
+    syncedAgents = [];
+    syncedAgentsInboxId = '';
+    agentAssignments = {};
+    if (isReplyRulesMode()) renderReplyRoutingRules();
+    else buildAgentMappingUI();
+  });
   toggleAssignmentPanel();
 });
 
@@ -2434,6 +2469,7 @@ function selectSyncedInbox() {
   if (!inboxId) return;
   $('sendInboxId').value = inboxId;
   syncedAgents = [];
+  syncedAgentsInboxId = '';
   agentAssignments = {};
   $('agentMap').innerHTML = '';
   updateAgentMapStatus([]);
@@ -2765,7 +2801,13 @@ async function sendApiCampaign() {
       log(`DRY #${i + 1}: ${row.name || row.phone_number} → inbox ${inboxId}`, 'warn');
       log(`  content: ${content}`, 'inf');
       log(`  template body params: ${JSON.stringify(body)}`, 'inf');
-      if ($('autoAssign')?.checked) log(`  assign ${assignmentTargetLabel()}: ${agent ? assignmentTargetName(agent) : 'غير محدد'}`, agent ? 'inf' : 'warn');
+      if ($('autoAssign')?.checked) {
+        const targetType = agent?.targetType || assignmentTargetType();
+        log(
+          `  assign ${targetTypeLabel(targetType)}: ${agent ? assignmentTargetName(agent, targetType) : 'غير محدد'}`,
+          agent ? 'inf' : 'warn'
+        );
+      }
     });
     log('Dry Run خلص — مفيش أي request إنشاء/إرسال اتنفذ', 'ok');
     $('sendApiBtn').disabled = false;
@@ -2945,17 +2987,25 @@ function assignmentTargetLabel() {
   return assignmentTargetType() === 'team' ? 'Team' : 'Agent';
 }
 
-function currentAssignmentTargets() {
-  return assignmentTargetType() === 'team' ? syncedTeams : syncedAgents;
+function targetTypeLabel(type) {
+  return type === 'team' ? 'Team' : 'Agent';
 }
 
-function assignmentTargetName(target) {
+function targetsForType(type) {
+  return type === 'team' ? syncedTeams : syncedAgents;
+}
+
+function currentAssignmentTargets() {
+  return targetsForType(assignmentTargetType());
+}
+
+function assignmentTargetName(target, type = assignmentTargetType()) {
   if (!target) return '';
   return target.available_name
       || target.name
       || target.email
       || target.description
-      || `${assignmentTargetLabel()} #${target.id || '-'}`;
+      || `${targetTypeLabel(type)} #${target.id || '-'}`;
 }
 
 function selectedFixedTargetName() {
@@ -2983,7 +3033,7 @@ function createReplyRuleId() {
 
 function addReplyRoutingRule(conditionType = 'label') {
   if (conditionType === 'fallback' && replyRoutingRules.some(rule => rule.conditionType === 'fallback')) {
-    log('مسموح بـ Team افتراضي واحد فقط', 'warn');
+    log('مسموح بـ Target افتراضي واحد فقط', 'warn');
     return;
   }
   const index = replyRoutingRules.length + 1;
@@ -2995,8 +3045,9 @@ function addReplyRoutingRule(conditionType = 'label') {
     attributeKey: conditionType === 'custom_attribute' ? ($('attrCol')?.value.trim() || '') : '',
     operator: 'equals',
     value: conditionType === 'label' ? normalizeLabelTitleClient($('labelName')?.value || '') : '',
-    teamId: '',
-    teamName: '',
+    targetType: 'team',
+    targetId: '',
+    targetName: '',
   });
   renderReplyRoutingRules();
 }
@@ -3010,9 +3061,14 @@ function updateReplyRoutingRule(id, field, value) {
     rule.value = value === 'label' ? normalizeLabelTitleClient($('labelName')?.value || '') : '';
     rule.operator = 'equals';
   }
-  if (field === 'teamId') {
-    const team = syncedTeams.find(item => String(item.id) === String(value));
-    rule.teamName = team ? assignmentTargetName(team) : '';
+  if (field === 'targetType') {
+    rule.targetId = '';
+    rule.targetName = '';
+  }
+  if (field === 'targetId') {
+    const type = rule.targetType === 'agent' ? 'agent' : 'team';
+    const target = targetsForType(type).find(item => String(item.id) === String(value));
+    rule.targetName = target ? assignmentTargetName(target, type) : '';
   }
   renderReplyRoutingRules();
 }
@@ -3033,7 +3089,14 @@ function moveReplyRoutingRule(id, direction) {
 function serializeReplyRoutingRules() {
   const attrKey = $('attrCol')?.value.trim() || '';
   return replyRoutingRules.map((rule, index) => {
-    const team = syncedTeams.find(item => String(item.id) === String(rule.teamId));
+    const targetType = rule.targetType === 'agent' ? 'agent' : 'team';
+    const targetId = String(
+      rule.targetId || (targetType === 'agent' ? rule.agentId : rule.teamId) || ''
+    );
+    const target = targetsForType(targetType).find(item => String(item.id) === targetId);
+    const targetName = target
+      ? assignmentTargetName(target, targetType)
+      : String(rule.targetName || (targetType === 'team' ? rule.teamName : rule.agentName) || '');
     return {
       id: String(rule.id || `route_${index + 1}`),
       name: String(rule.name || `Route ${index + 1}`).trim(),
@@ -3042,8 +3105,11 @@ function serializeReplyRoutingRules() {
       attributeKey: rule.conditionType === 'custom_attribute' ? attrKey : '',
       operator: rule.operator || 'equals',
       value: rule.conditionType === 'fallback' ? '' : String(rule.value || '').trim(),
-      teamId: String(rule.teamId || ''),
-      teamName: team ? assignmentTargetName(team) : String(rule.teamName || ''),
+      targetType,
+      targetId,
+      targetName,
+      teamId: targetType === 'team' ? targetId : '',
+      teamName: targetType === 'team' ? targetName : '',
     };
   });
 }
@@ -3052,7 +3118,7 @@ function renderReplyRoutingRules() {
   const list = $('replyRuleList');
   if (!list) return;
   if (!replyRoutingRules.length) {
-    list.innerHTML = '<div class="reply-rule-empty">ابدأ بشرط على Label الحملة أو قيمة الـ Custom Attribute، وممكن تضيف Team افتراضي في آخر القائمة.</div>';
+    list.innerHTML = '<div class="reply-rule-empty">ابدأ بشرط على Label الحملة أو قيمة الـ Custom Attribute، واختار لكل Rule إما Agent أو Team. ممكن تضيف Target افتراضي في آخر القائمة.</div>';
     updateReplyRoutingStatus();
     persistReplyRoutingRules();
     return;
@@ -3061,7 +3127,13 @@ function renderReplyRoutingRules() {
   list.innerHTML = replyRoutingRules.map((rule, index) => {
     const fallback = rule.conditionType === 'fallback';
     const customAttr = rule.conditionType === 'custom_attribute';
-    const teamOptions = renderReplyTeamOptions(rule.teamId);
+    const targetType = rule.targetType === 'agent' ? 'agent' : 'team';
+    const targetId = rule.targetId || (targetType === 'team' ? rule.teamId : rule.agentId) || '';
+    const targetOptions = renderReplyTargetOptions(targetType, targetId);
+    const targetTypeOptions = [
+      ['agent', 'Agent'],
+      ['team', 'Team'],
+    ].map(([value, label]) => `<option value="${value}"${targetType === value ? ' selected' : ''}>${label}</option>`).join('');
     const conditionOptions = [
       ['label', 'Label'],
       ['custom_attribute', 'Attribute'],
@@ -3099,8 +3171,12 @@ function renderReplyRoutingRules() {
           ${valueField}
         </div>
         <div class="field">
-          <label>Target Team</label>
-          <select onchange="updateReplyRoutingRule('${rule.id}','teamId',this.value)">${teamOptions}</select>
+          <label>Target Type</label>
+          <select onchange="updateReplyRoutingRule('${rule.id}','targetType',this.value)">${targetTypeOptions}</select>
+        </div>
+        <div class="field">
+          <label>Target ${targetTypeLabel(targetType)}</label>
+          <select onchange="updateReplyRoutingRule('${rule.id}','targetId',this.value)">${targetOptions}</select>
         </div>
         <div class="reply-rule-tools">
           <button class="secondary reply-rule-tool" type="button" title="تحريك لأعلى" onclick="moveReplyRoutingRule('${rule.id}',-1)">↑</button>
@@ -3113,20 +3189,22 @@ function renderReplyRoutingRules() {
   persistReplyRoutingRules();
 }
 
-function renderReplyTeamOptions(selected = '') {
-  const options = ['<option value="">اختار Team</option>'];
-  for (const team of syncedTeams) {
-    const id = String(team.id);
-    options.push(`<option value="${escapeHtml(id)}"${id === String(selected) ? ' selected' : ''}>${escapeHtml(assignmentTargetName(team))} (#${escapeHtml(id)})</option>`);
+function renderReplyTargetOptions(type, selected = '') {
+  const label = targetTypeLabel(type);
+  const targets = targetsForType(type);
+  const options = [`<option value="">اختار ${label}</option>`];
+  for (const target of targets) {
+    const id = String(target.id);
+    options.push(`<option value="${escapeHtml(id)}"${id === String(selected) ? ' selected' : ''}>${escapeHtml(assignmentTargetName(target, type))} (#${escapeHtml(id)})</option>`);
   }
-  if (selected && !syncedTeams.some(team => String(team.id) === String(selected))) {
-    options.push(`<option value="${escapeHtml(String(selected))}" selected>${escapeHtml(`Team #${selected}`)} — اعمل Sync</option>`);
+  if (selected && !targets.some(target => String(target.id) === String(selected))) {
+    options.push(`<option value="${escapeHtml(String(selected))}" selected>${escapeHtml(`${label} #${selected}`)} — اعمل Sync</option>`);
   }
   return options.join('');
 }
 
 function clientReplyRuleMatches(rule, row) {
-  if (!rule.teamId) return false;
+  if (!rule.targetId) return false;
   if (rule.conditionType === 'fallback') return true;
   const expected = normalizeAgentKey(rule.value);
   if (!expected) return false;
@@ -3154,10 +3232,17 @@ function validateReplyRoutingRules(rows = csvData, shouldLog = false) {
   if (rules.filter(rule => rule.conditionType === 'fallback').length > 1) problems.push('مسموح بـ Fallback واحد فقط');
   const fallbackIndex = rules.findIndex(rule => rule.conditionType === 'fallback');
   if (fallbackIndex >= 0 && fallbackIndex !== rules.length - 1) problems.push('الـFallback لازم يكون آخر قاعدة');
-  if (rules.some(rule => !rule.teamId)) problems.push('اختار Team لكل قاعدة');
+  if (rules.some(rule => !rule.targetId)) problems.push('اختار Agent أو Team لكل قاعدة');
   if (syncedTeams.length && rules.some(rule => (
-    rule.teamId && !syncedTeams.some(team => String(team.id) === String(rule.teamId))
+    rule.targetType === 'team'
+      && rule.targetId
+      && !syncedTeams.some(team => String(team.id) === String(rule.targetId))
   ))) problems.push('في Team قديم أو غير موجود؛ اعمل Sync واختار Team صالح');
+  if (syncedAgents.length && rules.some(rule => (
+    rule.targetType === 'agent'
+      && rule.targetId
+      && !syncedAgents.some(agent => String(agent.id) === String(rule.targetId))
+  ))) problems.push('في Agent قديم أو مش عضو في الـInbox؛ اعمل Sync واختار Agent صالح');
   if (rules.some(rule => rule.conditionType !== 'fallback' && !rule.value)) problems.push('اكتب قيمة لكل شرط');
   if (rules.some(rule => rule.conditionType === 'custom_attribute') && !$('attrCol')?.value.trim()) {
     problems.push('حدد عمود الـ Custom Attribute فوق');
@@ -3175,7 +3260,7 @@ function updateReplyRoutingStatus() {
   if (!status) return;
   const result = validateReplyRoutingRules(csvData, false);
   status.textContent = result.ok
-    ? `جاهز: ${replyRoutingRules.length} قاعدة، وكل Contacts الحاليين لهم Target Team.`
+    ? `جاهز: ${replyRoutingRules.length} قاعدة، وكل Contacts الحاليين لهم Agent أو Team محدد.`
     : result.problems.join(' • ');
   status.className = `reply-rule-status ${result.ok ? 'ok' : 'warn'}`;
 }
@@ -3187,7 +3272,20 @@ function persistReplyRoutingRules() {
 function restoreReplyRoutingRules() {
   try {
     const saved = JSON.parse(localStorage.getItem('campaignReplyRoutingRules') || '[]');
-    if (Array.isArray(saved)) replyRoutingRules = saved.slice(0, 50).filter(rule => rule?.id && rule?.conditionType);
+    if (Array.isArray(saved)) {
+      replyRoutingRules = saved
+        .slice(0, 50)
+        .filter(rule => rule?.id && rule?.conditionType)
+        .map(rule => {
+          const targetType = rule.targetType === 'agent' ? 'agent' : 'team';
+          return {
+            ...rule,
+            targetType,
+            targetId: String(rule.targetId || (targetType === 'agent' ? rule.agentId : rule.teamId) || ''),
+            targetName: String(rule.targetName || (targetType === 'agent' ? rule.agentName : rule.teamName) || ''),
+          };
+        });
+    }
   } catch (_) {
     replyRoutingRules = [];
   }
@@ -3250,6 +3348,7 @@ function findTargetForValue(value) {
 
 function handleAssignmentTargetTypeChange() {
   agentAssignments = {};
+  if ($('fixedAgentSelect')) $('fixedAgentSelect').value = '';
   const map = $('agentMap');
   if (map) map.innerHTML = '';
   toggleAssignmentPanel();
@@ -3261,12 +3360,12 @@ function toggleAssignmentPanel() {
   if (body) body.style.display = enabled ? 'block' : 'none';
 
   const mode = assignmentMode();
-  const replyTeam = ['on_reply_team', 'on_reply_rules'].includes(mode);
+  const deferredReply = ['on_reply_team', 'on_reply_rules'].includes(mode);
   const replyRules = mode === 'on_reply_rules';
-  if (replyTeam && $('assignTargetType')) $('assignTargetType').value = 'team';
-  if ($('assignTargetType')) $('assignTargetType').disabled = replyTeam;
+  if ($('assignTargetType')) $('assignTargetType').disabled = false;
 
   const byCsv = mode === 'by_csv';
+  const targetTypeWrap = $('assignTargetTypeWrap');
   const fixedWrap = $('fixedAgentWrap');
   const csvColumnWrap = $('csvTargetColumnWrap');
   const mapWrap = $('agentMap');
@@ -3275,23 +3374,26 @@ function toggleAssignmentPanel() {
   const rulesWrap = $('replyRulesWrap');
   const mapStatus = $('agentMapStatus');
 
+  if (targetTypeWrap) targetTypeWrap.style.display = enabled && replyRules ? 'none' : 'block';
   if (fixedWrap) fixedWrap.style.display = enabled && !byCsv && !replyRules ? 'block' : 'none';
   if (csvColumnWrap) csvColumnWrap.style.display = enabled && byCsv ? 'block' : 'none';
   if (mapWrap) mapWrap.style.display = enabled && byCsv ? 'grid' : 'none';
   if (rulesWrap) rulesWrap.style.display = enabled && replyRules ? 'grid' : 'none';
   if (mapStatus) mapStatus.style.display = enabled && !replyRules ? 'block' : 'none';
   if (fixedTargetLabel) {
-    fixedTargetLabel.textContent = replyTeam
-      ? 'التيم الذي سيتم التوزيع على أعضائه عند رد العميل'
+    fixedTargetLabel.textContent = deferredReply
+      ? `الـ${assignmentTargetLabel()} الذي سيستلم أول رد من العميل`
       : assignmentTargetType() === 'team'
       ? 'التيم المسؤول عن كل الحملة'
       : 'الموظف المسؤول عن كل الحملة';
   }
   if (help) {
     help.textContent = replyRules
-      ? 'كل Contact هيتحدد له Target Team من الـLabel أو قيمة الـCustom Attribute، لكن التنفيذ نفسه يحصل فقط عند أول رد من العميل.'
-      : replyTeam
-      ? 'الحملة هتتبعت بدون Team أو موظف. أول ما العميل يرد، Chatwoot يعيّن التيم المختار ويطبق Auto Assign الخاص به لو مفعّل.'
+      ? 'كل Rule لها Target مستقل: تقدر تختار Agent في Rule وTeam في Rule ثانية. التعيين لا يحصل إلا مع أول رد من العميل.'
+      : deferredReply
+      ? assignmentTargetType() === 'team'
+        ? 'الحملة هتتبعت بدون تعيين. أول ما العميل يرد، Chatwoot يعيّن الـTeam المختار ويطبق Auto Assign الخاص به لو مفعّل.'
+        : 'الحملة هتتبعت بدون تعيين. أول ما العميل يرد، المحادثة هتروح مباشرة للـAgent المختار.'
       : byCsv
       ? `الأبب هيقرأ قيمة عمود التوزيع في CSV ويربط كل قيمة بـ ${assignmentTargetLabel()}. لو خانة العمود فاضية هيستخدم عمود الـ Custom Attribute.`
       : `كل المحادثات في الحملة دي هتتعيّن لنفس الـ ${assignmentTargetLabel()} المختار.`;
@@ -3319,12 +3421,14 @@ function updateAgentMapStatus(values = null) {
     const target = currentAssignmentTargets().find(item => String(item.id) === String($('fixedAgentSelect')?.value || ''));
     if (target) {
       status.textContent = assignmentMode() === 'on_reply_team'
-        ? `جاهز: عند أول رد ستنتقل المحادثة إلى Team ${assignmentTargetName(target)}؛ وسيطبق Chatwoot سياسة Auto Assign الخاصة بالتيم إن كانت مفعّلة.`
+        ? assignmentTargetType() === 'team'
+          ? `جاهز: أول رد هينقل المحادثة إلى Team ${assignmentTargetName(target)}، وسيطبق Chatwoot سياسة Auto Assign الخاصة به إن كانت مفعّلة.`
+          : `جاهز: أول رد هينقل المحادثة مباشرة إلى Agent ${assignmentTargetName(target)}.`
         : `جاهز: كل الحملة هتتعيّن إلى ${assignmentTargetName(target)}.`;
       status.className = 'agent-map-status ok';
     } else {
       status.textContent = assignmentMode() === 'on_reply_team'
-        ? 'اختار التيم الذي سيتم التوزيع على أعضائه عند رد العميل.'
+        ? `اختار الـ${assignmentTargetLabel()} الذي سيستلم أول رد من العميل.`
         : `اختار الـ ${assignmentTargetLabel()} المسؤول عن الحملة.`;
       status.className = 'agent-map-status warn';
     }
@@ -3426,9 +3530,11 @@ async function syncInboxAgents() {
   }
   syncedAgents = r.data.payload || r.data || [];
   if (!Array.isArray(syncedAgents)) syncedAgents = [];
+  syncedAgentsInboxId = String(inboxId);
   agentAssignments = {};
   log(`تم جلب ${syncedAgents.length} agent من Inbox #${inboxId}`, syncedAgents.length ? 'ok' : 'warn');
-  if (assignmentTargetType() === 'agent') buildAgentMappingUI();
+  if (isReplyRulesMode()) renderReplyRoutingRules();
+  else if (assignmentTargetType() === 'agent') buildAgentMappingUI();
   else populateFixedAgentSelect();
   return !!syncedAgents.length;
 }
@@ -3452,24 +3558,31 @@ async function syncTeams() {
 
 async function prepareAssignmentMap(rows) {
   if (!$('autoAssign')?.checked) return true;
-  if (isDeferredReplyMode() && $('assignTargetType')) $('assignTargetType').value = 'team';
-  if (!currentAssignmentTargets().length) {
-    const ok = assignmentTargetType() === 'team' ? await syncTeams() : await syncInboxAgents();
-    if (!ok) return false;
-  } else {
-    buildAgentMappingUI();
-  }
-  if (isDeferredReplyMode() && assignmentTargetType() !== 'team') {
-    log('✗ التوزيع عند رد العميل لازم يكون على Team', 'err');
-    return false;
-  }
   if (isReplyRulesMode()) {
+    const rules = serializeReplyRoutingRules();
+    const targetTypes = new Set(rules.map(rule => rule.targetType));
+    const currentInboxId = $('sendInboxId').value.trim() || $('inboxSelect').value;
+    if (
+      targetTypes.has('agent')
+      && (!syncedAgents.length || syncedAgentsInboxId !== String(currentInboxId))
+      && !await syncInboxAgents()
+    ) return false;
+    if (targetTypes.has('team') && !syncedTeams.length && !await syncTeams()) return false;
     const result = validateReplyRoutingRules(rows, true);
     if (!result.ok) {
       log('راجع ترتيب وقيم Reply Routing Rules ثم جرّب تاني', 'warn');
       return false;
     }
     return true;
+  }
+  const currentInboxId = $('sendInboxId').value.trim() || $('inboxSelect').value;
+  const agentsNeedRefresh = assignmentTargetType() === 'agent'
+    && syncedAgentsInboxId !== String(currentInboxId);
+  if (!currentAssignmentTargets().length || agentsNeedRefresh) {
+    const ok = assignmentTargetType() === 'team' ? await syncTeams() : await syncInboxAgents();
+    if (!ok) return false;
+  } else {
+    buildAgentMappingUI();
   }
   if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     const targetId = $('fixedAgentSelect')?.value;
@@ -3493,19 +3606,32 @@ async function prepareAssignmentMap(rows) {
 function mappedAgentForRow(row, attrCol) {
   if (isReplyRulesMode()) {
     const route = replyRouteForRow(row);
-    if (!route?.teamId) return null;
-    return syncedTeams.find(team => String(team.id) === String(route.teamId))
-      || { id: route.teamId, name: route.teamName || `Team #${route.teamId}` };
+    if (!route?.targetId) return null;
+    const type = route.targetType === 'agent' ? 'agent' : 'team';
+    const target = targetsForType(type).find(item => String(item.id) === String(route.targetId));
+    return target
+      ? { ...target, targetType: type }
+      : {
+        id: route.targetId,
+        name: route.targetName || `${targetTypeLabel(type)} #${route.targetId}`,
+        targetType: type,
+      };
   }
   if (assignmentMode() === 'fixed_agent' || assignmentMode() === 'on_reply_team') {
     const targetId = $('fixedAgentSelect')?.value;
     if (!targetId) return null;
-    return currentAssignmentTargets().find(target => String(target.id) === String(targetId)) || { id: targetId, name: `${assignmentTargetLabel()} #${targetId}` };
+    const target = currentAssignmentTargets().find(item => String(item.id) === String(targetId));
+    return target
+      ? { ...target, targetType: assignmentTargetType() }
+      : { id: targetId, name: `${assignmentTargetLabel()} #${targetId}`, targetType: assignmentTargetType() };
   }
   const value = String(row[assignmentValueColumn()] || row[attrCol] || '').trim();
   const targetId = agentAssignments[value];
   if (!targetId) return null;
-  return currentAssignmentTargets().find(target => String(target.id) === String(targetId)) || { id: targetId, name: `${assignmentTargetLabel()} #${targetId}` };
+  const target = currentAssignmentTargets().find(item => String(item.id) === String(targetId));
+  return target
+    ? { ...target, targetType: assignmentTargetType() }
+    : { id: targetId, name: `${assignmentTargetLabel()} #${targetId}`, targetType: assignmentTargetType() };
 }
 
 async function assignConversationToCsvAgent(conversationId, row, attrCol) {

@@ -48,9 +48,9 @@ export async function handleChatwootWebhook(payload) {
       return { status: 'skipped', reason: marker.reason };
     }
 
-    // Assign the Team itself. Chatwoot will apply the Team's own Auto Assign,
-    // availability, and capacity policy when it is enabled.
-    await assignConversationToTeam(config, conversationId, marker.teamId);
+    // Team targets keep Chatwoot's own Auto Assign policy. Agent targets go
+    // straight to the selected inbox member.
+    await assignConversationToTarget(config, conversationId, marker.targetType, marker.targetId);
     await openConversationIfNeeded(config, conversationId, conversation?.status);
 
     const updated = await fetchConversation(config, conversationId);
@@ -66,8 +66,11 @@ export async function handleChatwootWebhook(payload) {
     return {
       status: 'assigned',
       conversationId: String(conversationId),
-      teamId: String(marker.teamId),
-      teamName: marker.teamName,
+      targetType: marker.targetType,
+      targetId: String(marker.targetId),
+      targetName: marker.targetName,
+      teamId: marker.targetType === 'team' ? String(marker.targetId) : '',
+      teamName: marker.targetType === 'team' ? marker.targetName : '',
       assigneeId: assignee?.id ? String(assignee.id) : '',
       assigneeName: assignee ? agentName(assignee) : '',
       ruleId: marker.ruleId,
@@ -85,10 +88,22 @@ export function isIncomingMessage(payload) {
 
 export function readReplyAssignmentMarker(attrs, now = new Date()) {
   const mode = String(attrs?.api_campaign_reply_assign_mode || '').trim();
-  if (mode !== 'on_reply_team') return { active: false, reason: 'not_reply_team_campaign' };
+  if (!['on_reply_target', 'on_reply_team'].includes(mode)) {
+    return { active: false, reason: 'not_reply_target_campaign' };
+  }
 
-  const teamId = String(attrs?.api_campaign_reply_team_id || '').trim();
-  if (!teamId || !/^\d+$/.test(teamId)) return { active: false, reason: 'missing_reply_team_id' };
+  const targetType = String(attrs?.api_campaign_reply_target_type || '').trim() === 'agent'
+    ? 'agent'
+    : 'team';
+  const targetId = String(
+    attrs?.api_campaign_reply_target_id || attrs?.api_campaign_reply_team_id || ''
+  ).trim();
+  if (!targetId || !/^\d+$/.test(targetId)) {
+    return { active: false, reason: 'missing_reply_target_id' };
+  }
+  const targetName = String(
+    attrs?.api_campaign_reply_target_name || attrs?.api_campaign_reply_team_name || ''
+  ).trim();
 
   const assignedAt = String(attrs?.api_campaign_reply_assigned_at || '').trim();
   if (assignedAt) return { active: false, reason: 'already_assigned' };
@@ -108,8 +123,11 @@ export function readReplyAssignmentMarker(attrs, now = new Date()) {
 
   return {
     active: true,
-    teamId,
-    teamName: String(attrs?.api_campaign_reply_team_name || '').trim(),
+    targetType,
+    targetId,
+    targetName,
+    teamId: targetType === 'team' ? targetId : '',
+    teamName: targetType === 'team' ? targetName : '',
     inboxId: String(attrs?.api_campaign_reply_inbox_id || '').trim(),
     markedAt: String(attrs?.api_campaign_marked_at || attrs?.api_campaign_created_at || '').trim(),
     assignmentKey: String(attrs?.api_campaign_reply_assignment_key || '').trim(),
@@ -146,12 +164,15 @@ async function fetchConversation(config, conversationId) {
   return r.payload || r;
 }
 
-async function assignConversationToTeam(config, conversationId, teamId) {
+async function assignConversationToTarget(config, conversationId, targetType, targetId) {
+  const body = targetType === 'agent'
+    ? { assignee_id: Number(targetId) }
+    : { team_id: Number(targetId) };
   await chatwootFetch(
     config,
     `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/assignments`,
     'POST',
-    { team_id: Number(teamId) }
+    body
   );
 }
 
@@ -160,9 +181,18 @@ async function markConversationAssigned(config, conversationId, attrs, marker, a
     ...(attrs || {}),
     api_campaign_reply_pending: false,
     api_campaign_reply_assigned_at: new Date().toISOString(),
-    api_campaign_reply_team_id: String(marker.teamId),
-    api_campaign_reply_team_name: marker.teamName,
+    api_campaign_reply_target_type: marker.targetType,
+    api_campaign_reply_target_id: String(marker.targetId),
+    api_campaign_reply_target_name: marker.targetName,
   };
+
+  if (marker.targetType === 'team') {
+    merged.api_campaign_reply_team_id = String(marker.targetId);
+    merged.api_campaign_reply_team_name = marker.targetName;
+  } else {
+    delete merged.api_campaign_reply_team_id;
+    delete merged.api_campaign_reply_team_name;
+  }
 
   if (assignee?.id) {
     merged.api_campaign_reply_assignee_id = String(assignee.id);

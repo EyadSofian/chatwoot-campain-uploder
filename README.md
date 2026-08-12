@@ -50,22 +50,28 @@ routing for the full campaign window.
 `WEBHOOK_SECRET` is optional but recommended. If it is set, add the same value
 to the Chatwoot webhook URL as `?token=...`.
 
-## Reply-Based Team Assignment
+## Reply-Based Agent or Team Assignment
 
 Use this when you want the broadcast to stay unassigned until the customer
 replies.
 
 1. In the assignment panel, enable automatic assignment.
-2. Choose `Team` as the target.
-3. Choose either `Team ثابت عند رد العميل` or `شروط Label / Custom Attribute عند الرد`.
-4. Click `Sync Teams`.
-5. For a fixed route, pick one Team. For conditional routing, add ordered rules and select a Target Team for each rule. The first matching rule wins; put the optional fallback last.
+2. Choose either `Target ثابت عند رد العميل` or `شروط Label / Custom Attribute عند الرد`.
+3. For a fixed route, choose `Agent` or `Team`, sync that target type, and select the target.
+4. For conditional routing, sync Agents and/or Teams, then choose the target type and target separately on every rule.
+5. The first matching rule wins; put the optional fallback last.
 6. Send the campaign as a background job.
 
 When the customer replies, Chatwoot sends a webhook to the app. The app checks
-the campaign marker on the conversation and assigns the Team stored there. If
-that Team has Auto Assign enabled, Chatwoot applies its own availability and
-capacity policy to select an agent.
+the campaign marker on the conversation and assigns the stored target. An Agent
+target goes directly to that inbox member. A Team target keeps Chatwoot's own
+Auto Assign, availability, and capacity policy.
+
+Example rules:
+
+- `Label = revit_august` → `Agent: Ahmed`
+- `course_type = BIM` → `Team: BIM Sales`
+- `Fallback` → `Team: General Sales`
 
 The Label and Custom Attribute used by the router are the same values configured
 in the campaign form. The route is resolved when the campaign row is prepared,

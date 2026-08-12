@@ -459,7 +459,7 @@ async function runSendJob(job, runtime) {
   if (!templateName) throw new Error('Template name is required');
   assertReplyAssignmentSettings(settings);
   await ensureLabel(job, runtime.config, labelName);
-  await assertReplyAssignmentTeamsExist(job, runtime);
+  await assertReplyAssignmentTargetsExist(job, runtime);
   if (attrCol) ensureColumnExists(rows, attrCol, 'Custom attribute column');
   assertTemplateMappings(rows, settings);
 
@@ -528,7 +528,9 @@ function normalizeSettings(settings) {
     sendRateLimit: Number(settings.sendRateLimit || 60),
     autoAssign: Boolean(settings.autoAssign),
     assignmentMode: String(settings.assignmentMode || 'by_csv'),
-    assignmentTargetType: String(settings.assignmentTargetType || 'agent'),
+    assignmentTargetType: String(settings.assignmentTargetType || '').trim().toLowerCase() === 'team'
+      ? 'team'
+      : 'agent',
     assignmentValueColumn: String(settings.assignmentValueColumn || settings.attrCol || '').trim(),
     fixedTargetId: String(settings.fixedTargetId || '').trim(),
     fixedTargetName: String(settings.fixedTargetName || '').trim().slice(0, 120),
@@ -1220,11 +1222,8 @@ function resolveAssignmentTarget(row, settings) {
 
 function assertReplyAssignmentSettings(settings) {
   if (!isDeferredReplyAssignment(settings)) return;
-  if (settings.assignmentTargetType !== 'team') {
-    throw new Error('Reply-based assignment requires Team target type');
-  }
   if (settings.assignmentMode === 'on_reply_team' && !settings.fixedTargetId) {
-    throw new Error('Reply-based assignment requires selecting a Team');
+    throw new Error('Reply-based assignment requires selecting an Agent or Team');
   }
   if (settings.assignmentMode === 'on_reply_rules') {
     if (!settings.replyRoutingRules.length) {
@@ -1245,22 +1244,55 @@ function assertReplyAssignmentSettings(settings) {
   }
 }
 
-async function assertReplyAssignmentTeamsExist(job, runtime) {
+async function assertReplyAssignmentTargetsExist(job, runtime) {
   const { config, settings } = runtime;
   if (!isDeferredReplyAssignment(settings)) return;
 
-  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/teams`, 'GET');
-  if (!r.ok) {
-    throw new Error(`Reply-routing Teams could not be verified: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  const targets = settings.assignmentMode === 'on_reply_rules'
+    ? settings.replyRoutingRules.map((rule) => ({
+      type: rule.targetType,
+      id: String(rule.targetId),
+    }))
+    : [{ type: settings.assignmentTargetType, id: String(settings.fixedTargetId) }];
+  const types = new Set(targets.map((target) => target.type));
+
+  const availableByType = { team: new Set(), agent: new Set() };
+  if (types.has('team')) {
+    const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/teams`, 'GET');
+    if (!r.ok) {
+      throw new Error(`Reply-routing Teams could not be verified: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+    }
+    const teams = Array.isArray(r.data) ? r.data : (r.data?.payload || []);
+    teams.forEach((team) => {
+      if (team?.id != null) availableByType.team.add(String(team.id));
+    });
   }
-  const teams = Array.isArray(r.data) ? r.data : (r.data?.payload || []);
-  const availableIds = new Set(teams.map((team) => String(team?.id || '')).filter(Boolean));
-  const targetIds = settings.assignmentMode === 'on_reply_rules'
-    ? settings.replyRoutingRules.map((rule) => String(rule.teamId))
-    : [String(settings.fixedTargetId)];
-  const missing = [...new Set(targetIds.filter((id) => !availableIds.has(id)))];
-  if (missing.length) {
-    throw new Error(`Reply-routing Team IDs do not exist in Chatwoot: ${missing.join(', ')}`);
+  if (types.has('agent')) {
+    const r = await cwFetch(
+      job,
+      config,
+      `/api/v1/accounts/${config.accountId}/inbox_members/${settings.inboxId}`,
+      'GET'
+    );
+    if (!r.ok) {
+      throw new Error(`Reply-routing Agents could not be verified: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+    }
+    const agents = Array.isArray(r.data) ? r.data : (r.data?.payload || []);
+    agents.forEach((agent) => {
+      if (agent?.id != null) availableByType.agent.add(String(agent.id));
+    });
+  }
+
+  for (const type of ['team', 'agent']) {
+    const missing = [...new Set(
+      targets
+        .filter((target) => target.type === type && !availableByType[type].has(target.id))
+        .map((target) => target.id)
+    )];
+    if (missing.length) {
+      const label = type === 'team' ? 'Team' : 'Agent';
+      throw new Error(`Reply-routing ${label} IDs do not exist in Chatwoot: ${missing.join(', ')}`);
+    }
   }
 }
 
@@ -1278,9 +1310,10 @@ function buildReplyAssignment(settings, campaignKey, contactId, row, labels) {
       throw new Error(`No reply-routing rule matched ${row.name || row.phone_number || `contact #${contactId}`}`);
     }
     return {
-      mode: 'on_reply_team',
-      teamId: route.teamId,
-      teamName: route.teamName,
+      mode: 'on_reply_target',
+      targetType: route.targetType,
+      targetId: route.targetId,
+      targetName: route.targetName,
       inboxId: settings.inboxId,
       assignmentKey: `${campaignKey}:${settings.inboxId}:${contactId}`,
       ruleId: route.id,
@@ -1290,13 +1323,14 @@ function buildReplyAssignment(settings, campaignKey, contactId, row, labels) {
   }
 
   return {
-    mode: 'on_reply_team',
-    teamId: settings.fixedTargetId,
-    teamName: settings.fixedTargetName,
+    mode: 'on_reply_target',
+    targetType: settings.assignmentTargetType,
+    targetId: settings.fixedTargetId,
+    targetName: settings.fixedTargetName,
     inboxId: settings.inboxId,
     assignmentKey: `${campaignKey}:${settings.inboxId}:${contactId}`,
-    ruleId: 'fixed_team',
-    ruleName: 'Fixed reply Team',
+    ruleId: `fixed_${settings.assignmentTargetType}`,
+    ruleName: `Fixed reply ${settings.assignmentTargetType === 'team' ? 'Team' : 'Agent'}`,
     condition: 'all campaign replies',
   };
 }

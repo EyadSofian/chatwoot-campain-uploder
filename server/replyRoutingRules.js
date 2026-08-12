@@ -15,7 +15,7 @@ export function resolveReplyRoutingRule(rules, context = {}) {
 }
 
 export function replyRoutingRuleMatches(rule, context = {}) {
-  if (!rule?.enabled || !rule.teamId) return false;
+  if (!rule?.enabled || !rule.targetId) return false;
   if (rule.conditionType === 'fallback') return true;
 
   if (rule.conditionType === 'label') {
@@ -45,8 +45,15 @@ function normalizeRule(rule, index) {
   const conditionType = CONDITION_TYPES.has(String(rule.conditionType || ''))
     ? String(rule.conditionType)
     : '';
-  const teamId = String(rule.teamId || '').trim();
-  if (!conditionType || !teamId || !/^\d+$/.test(teamId)) return null;
+  // Rules created before Agent targets existed only contain teamId/teamName.
+  // Treat those as Team targets so saved campaigns keep working unchanged.
+  const targetType = String(rule.targetType || '').trim().toLowerCase() === 'agent'
+    ? 'agent'
+    : 'team';
+  const targetId = String(
+    rule.targetId || (targetType === 'agent' ? rule.agentId : rule.teamId) || ''
+  ).trim();
+  if (!conditionType || !targetId || !/^\d+$/.test(targetId)) return null;
 
   const attributeKey = conditionType === 'custom_attribute'
     ? String(rule.attributeKey || '').trim().slice(0, 120)
@@ -59,6 +66,9 @@ function normalizeRule(rule, index) {
     ? String(rule.operator)
     : 'equals';
   const id = String(rule.id || `route_${index + 1}`).trim().slice(0, 80);
+  const targetName = String(
+    rule.targetName || (targetType === 'agent' ? rule.agentName : rule.teamName) || ''
+  ).trim().slice(0, 120);
 
   return {
     id,
@@ -68,8 +78,13 @@ function normalizeRule(rule, index) {
     attributeKey,
     operator: conditionType === 'fallback' ? 'equals' : operator,
     value,
-    teamId,
-    teamName: String(rule.teamName || '').trim().slice(0, 120),
+    targetType,
+    targetId,
+    targetName,
+    // Keep Team aliases in the normalized result for older stored jobs and
+    // callers that still inspect these fields.
+    teamId: targetType === 'team' ? targetId : '',
+    teamName: targetType === 'team' ? targetName : '',
   };
 }
 
