@@ -23,6 +23,7 @@ const PERMANENT_WA_ERRORS = new Set([
 ]);
 const RETRYABLE_WA_ERRORS = new Set([131026]);
 
+const MISSING_TOKEN_ERROR = 'CHATWOOT_API_TOKEN is not configured on the server. Set it in the environment variables and redeploy.';
 const activeJobs = new Map();
 const queueChains = new Map();
 const maxParallelSendQueues = clampInt(process.env.MAX_PARALLEL_SEND_QUEUES || process.env.MAX_PARALLEL_JOB_QUEUES || 3, 1, 8);
@@ -188,7 +189,7 @@ export function registerJobRoutes(app) {
       if (!job) return res.status(404).json({ error: 'Job not found' });
       if (job.type !== 'send') return res.status(400).json({ error: 'Only send jobs can be checked' });
       const config = buildConfig(req.body?.settings || {});
-      if (!config.token) return res.status(400).json({ error: 'Chatwoot API token is required' });
+      if (!config.token) return res.status(500).json({ error: MISSING_TOKEN_ERROR });
       const result = await checkJobDelivery(job, config);
       await writeFailedCsv(job);
       await writeJob(job);
@@ -204,7 +205,7 @@ export function registerJobRoutes(app) {
       if (!job) return res.status(404).json({ error: 'Job not found' });
       if (job.type !== 'send') return res.status(400).json({ error: 'Only send jobs can retry failed messages' });
       const config = buildConfig(req.body?.settings || {});
-      if (!config.token) return res.status(400).json({ error: 'Chatwoot API token is required' });
+      if (!config.token) return res.status(500).json({ error: MISSING_TOKEN_ERROR });
       const result = await retryJobDeliveryFailures(job, config);
       await writeFailedCsv(job);
       await writeJob(job);
@@ -280,7 +281,7 @@ async function startStoredJob(job, input, reason) {
   const config = buildConfig(input.settings || job.settings || {});
   if (!config.token) {
     job.status = 'interrupted';
-    job.lastError = 'Queued job cannot start because CHATWOOT_API_TOKEN is missing on the server or current tab settings.';
+    job.lastError = `Queued job cannot start: ${MISSING_TOKEN_ERROR}`;
     job.updatedAt = new Date().toISOString();
     await writeJob(job);
     await logJob(job, job.lastError, 'warn').catch(() => {});
@@ -318,8 +319,8 @@ async function createJob(type, body = {}) {
 
   const config = buildConfig(body.settings || {});
   if (!config.token) {
-    const err = new Error('Chatwoot API token is required');
-    err.status = 400;
+    const err = new Error(MISSING_TOKEN_ERROR);
+    err.status = 500;
     throw err;
   }
   const settings = normalizeSettings(body.settings || {});
@@ -499,7 +500,8 @@ function buildConfig(settings) {
   return {
     baseUrl: String(settings.chatwootUrl || process.env.CHATWOOT_URL || 'https://chat.engosoft.com').replace(/\/$/, ''),
     accountId: String(settings.accountId || process.env.CHATWOOT_ACCOUNT_ID || '2'),
-    token: String(settings.apiToken || process.env.CHATWOOT_API_TOKEN || '').trim(),
+    // التوكن من الـ environment بس — الواجهة مابقتش تبعت توكن خالص
+    token: String(process.env.CHATWOOT_API_TOKEN || '').trim(),
   };
 }
 
@@ -549,7 +551,7 @@ function sanitizeSettings(settings) {
   const sanitized = normalizeSettings(settings);
   sanitized.chatwootUrl = String(settings.chatwootUrl || process.env.CHATWOOT_URL || '').replace(/\/$/, '');
   sanitized.accountId = String(settings.accountId || process.env.CHATWOOT_ACCOUNT_ID || '2');
-  sanitized.apiToken = settings.apiToken ? '***from-ui***' : (process.env.CHATWOOT_API_TOKEN ? '***from-env***' : '');
+  sanitized.apiToken = process.env.CHATWOOT_API_TOKEN ? '***from-env***' : '';
   return sanitized;
 }
 
@@ -604,7 +606,15 @@ function retryDelay(attempt, status) {
 async function ensureLabel(job, config, label) {
   if (!label) throw new Error('Label name is empty after sanitizing');
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/labels`, 'GET');
-  const labels = r.ok ? (r.data.payload || []) : [];
+  if (!r.ok) {
+    // Never hide this behind the create call: a failing read means the token
+    // itself is the problem, not the label.
+    if (r.status === 401 || r.status === 403) {
+      throw new Error(`CHATWOOT_API_TOKEN cannot read labels on account #${config.accountId} (HTTP ${r.status}). Check that the token is valid and that its user is a member of this account.`);
+    }
+    throw new Error(`Failed to read labels on account #${config.accountId}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+  const labels = r.data.payload || [];
   if (labels.find((item) => item.title === label)) {
     await logJob(job, `Label exists: ${label}`, 'info');
     return true;
@@ -622,6 +632,11 @@ async function ensureLabel(job, config, label) {
   if (cr.status === 422 && msg.includes('title has already been taken')) {
     await logJob(job, `Label already exists: ${label}`, 'info');
     return true;
+  }
+  if (cr.status === 401 || cr.status === 403) {
+    // Chatwoot's LabelPolicy allows every member to list labels but only
+    // administrators to create them.
+    throw new Error(`Cannot create label "${label}": CHATWOOT_API_TOKEN reads account #${config.accountId} fine but is not an Administrator there, and Chatwoot only lets administrators create labels. Use an admin token, or create the label manually in Chatwoot first.`);
   }
   throw new Error(`Failed to create label ${label}: HTTP ${cr.status} ${JSON.stringify(cr.data)}`);
 }

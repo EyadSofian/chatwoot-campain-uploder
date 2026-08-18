@@ -241,14 +241,13 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
   <!-- Connection Settings -->
   <div class="card">
     <div class="card-title">إعدادات الاتصال</div>
-    <div class="row3">
-      <div class="field">
-        <label>API Token</label>
-        <input id="apiToken" type="password" placeholder="API Access Token">
-      </div>
-      <div class="field">
-        <label>Account ID</label>
-        <input id="accId" value="2" placeholder="2">
+    <div class="field">
+      <label>Account ID</label>
+      <input id="accId" value="2" placeholder="2">
+      <div class="hint">
+        الـ API Token اتشال من هنا خالص. السيرفر بيستخدم <code>CHATWOOT_API_TOKEN</code>
+        المتسجّل في الـ environment variables، ولازم يكون بتاع يوزر <b>Administrator</b>
+        على الـ Account ده عشان يقدر ينشئ Labels.
       </div>
     </div>
     <button class="test-btn" onclick="testConnection()">← اختبر الاتصال</button>
@@ -783,7 +782,6 @@ function collectServerJobSettings() {
     log(`اسم الـ Label اتنضف تلقائياً: "${rawLabelName}" → "${safeLabelName}"`, 'warn');
   }
   return {
-    apiToken: $('apiToken')?.value || '',
     accountId: $('accId')?.value || '2',
     labelName: safeLabelName,
     operatorName: getOperatorName(),
@@ -1585,13 +1583,13 @@ drop.ondrop = e => {
 };
 
 // ─── API — كل الـ requests بتروح على Railway مباشرة ────────
+// التوكن مابيتبعتش من المتصفح — السيرفر بيحقن CHATWOOT_API_TOKEN في الـ proxy
 async function cwFetch(path, method, body, retries = 2) {
   const url = getBase() + path;
-  const token = $('apiToken').value;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const res = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'api_access_token': token },
+      headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined
     });
     // Handle rate limit (429)
@@ -1633,16 +1631,42 @@ async function testConnection() {
   el.style.display = 'block';
   try {
     const r = await serverCwFetch(`/accounts/${acc}/labels`, 'GET');
-    if (r.ok) {
-      el.className = 'test-result ok';
-      el.textContent = `✓ الاتصال ناجح — ${r.data.payload?.length || 0} Label موجود`;
-    } else {
+    if (!r.ok) {
       el.className = 'test-result err';
-      el.textContent = `✗ خطأ ${r.status} — تأكد من الـ Token والـ Account ID`;
+      el.textContent = r.status === 401
+        ? `✗ خطأ 401 — الـ CHATWOOT_API_TOKEN على السيرفر مش صالح أو مش عضو في Account #${acc}`
+        : `✗ خطأ ${r.status} — راجع الـ CHATWOOT_API_TOKEN والـ Account ID`;
+      return;
+    }
+    const role = await getServerTokenRole(acc);
+    const labelCount = r.data.payload?.length || 0;
+    if (role === 'administrator') {
+      el.className = 'test-result ok';
+      el.textContent = `✓ الاتصال ناجح — توكن Administrator — ${labelCount} Label موجود`;
+    } else if (role) {
+      el.className = 'test-result err';
+      el.textContent = `⚠ الاتصال شغال (${labelCount} Label) لكن التوكن دوره "${role}" مش administrator — إنشاء الـ Labels هيفشل بـ 401`;
+    } else {
+      el.className = 'test-result ok';
+      el.textContent = `✓ الاتصال ناجح — ${labelCount} Label موجود (مقدرتش أتأكد من دور التوكن)`;
     }
   } catch(e) {
     el.className = 'test-result err';
     el.textContent = `✗ Network error: ${e.message}`;
+  }
+}
+
+// بيرجّع دور التوكن اللي على السيرفر في الـ account ده (administrator / agent)
+// أو null لو مقدرناش نقراه
+async function getServerTokenRole(acc) {
+  try {
+    const r = await cwFetch('/api/v1/profile', 'GET');
+    if (!r.ok) return null;
+    const accounts = r.data?.accounts || [];
+    const match = accounts.find((a) => String(a.id) === String(acc));
+    return match?.role || null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -1658,6 +1682,11 @@ async function ensureLabel(label) {
   if (cr.status === 422 && (cr.data?.message || '').toLowerCase().includes('title has already been taken')) {
     log(`Label "${label}" موجود بالفعل — هنكمل عادي`, 'inf');
     return true;
+  }
+  if (cr.status === 401 || cr.status === 403) {
+    log(`✗ الـ CHATWOOT_API_TOKEN بتاع السيرفر مش Administrator على Account #${acc} — Chatwoot بيسمح للأدمن بس بإنشاء الـ Labels`, 'err');
+    log(`الحل: استخدم توكن أدمن، أو اعمل الـ Label "${label}" يدوياً من Chatwoot`, 'warn');
+    return false;
   }
   log(`✗ فشل إنشاء Label: ${JSON.stringify(cr.data)}`, 'err'); return false;
 }

@@ -11,6 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CHATWOOT_URL = (process.env.CHATWOOT_URL || 'https://chat.engosoft.com').replace(/\/$/, '');
 const CHATWOOT_API_TOKEN = (process.env.CHATWOOT_API_TOKEN || '').trim();
+const CLIENT_CREDENTIAL_HEADERS = new Set(['api_access_token', 'authorization', 'cookie']);
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -78,7 +79,21 @@ app.all('/api/chatwoot/*', async (req, res) => {
 
 app.use(express.static(join(__dirname, '../public')));
 
+// The browser never holds a Chatwoot token. Any credential it sends is dropped
+// here and replaced with the one configured on the server.
+function buildProxyHeaders(reqHeaders, hostname) {
+  const headers = { ...reqHeaders, host: hostname };
+  for (const key of Object.keys(headers)) {
+    if (CLIENT_CREDENTIAL_HEADERS.has(key.toLowerCase())) delete headers[key];
+  }
+  headers.api_access_token = CHATWOOT_API_TOKEN;
+  return headers;
+}
+
 app.use('/api/v1', (req, res) => {
+  if (!CHATWOOT_API_TOKEN) {
+    return res.status(500).json({ error: 'CHATWOOT_API_TOKEN is not configured on the server' });
+  }
   const targetUrl = new URL(CHATWOOT_URL);
   const isHttps = targetUrl.protocol === 'https:';
   const lib = isHttps ? https : http;
@@ -87,7 +102,7 @@ app.use('/api/v1', (req, res) => {
     port: targetUrl.port || (isHttps ? 443 : 80),
     path: '/api/v1' + req.url,
     method: req.method,
-    headers: { ...req.headers, host: targetUrl.hostname }
+    headers: buildProxyHeaders(req.headers, targetUrl.hostname)
   };
   const proxy = lib.request(options, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
