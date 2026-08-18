@@ -25,8 +25,20 @@ Required environment variable:
 
 ```bash
 CHATWOOT_URL=https://chat.engosoft.com
-CHATWOOT_API_TOKEN=your_admin_or_agent_access_token
+CHATWOOT_API_TOKEN=your_administrator_access_token
 ```
+
+The token must belong to a Chatwoot user with the **Administrator** role on the account
+you upload to. Chatwoot lets any member list labels, but only administrators create them,
+so an agent token fails every upload with
+`401 {"error":"You are not authorized to do this action"}` before a single contact is
+processed.
+
+The browser never holds this token: the UI has no token field, and `/api/v1/*` requests
+are proxied through the server, which strips any client-supplied credential and injects
+`CHATWOOT_API_TOKEN` itself. Anyone who can reach the deployment can therefore use the
+Chatwoot API through it, so keep the app URL private (or put it behind your own
+authentication).
 
 Optional:
 
@@ -103,7 +115,7 @@ URL: https://YOUR-APP-DOMAIN/api/webhooks/chatwoot?token=YOUR_SECRET
 ## Safe Sending Flow
 
 1. Open the app.
-2. Enter your Chatwoot API token and Account ID.
+2. Enter your Account ID (the API token comes from the server environment).
 3. Click `Sync Inboxes`.
 4. Choose the WhatsApp inbox.
 5. Click `Sync Templates من Meta` if the template list is stale.
