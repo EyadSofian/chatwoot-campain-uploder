@@ -234,7 +234,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
       <h1>Chatwoot Campaign Uploader</h1>
       <p>رفع الـ Contacts وإضافة Labels تلقائياً</p>
     </div>
-    <div class="badge">v1.15 Agent + Team Routing</div>
+    <div class="badge">v1.16 Template Preflight</div>
     <button class="secondary theme-btn" id="themeBtn" type="button">Dark</button>
   </div>
 
@@ -377,7 +377,7 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <div class="field">
       <label>Body Variables Mapping</label>
       <textarea id="bodyParams" placeholder="1=name&#10;2=course_name"></textarea>
-      <div class="hint">كل سطر بصيغة رقم المتغير = اسم عمود في CSV. لو الاسم مش موجود كعمود هيتعامل كنص ثابت.</div>
+      <div class="hint">كل Parameter يبدأ بسطر مستقل، مثل 1=name. تقدر تلصق نص متعدد الأسطر بعد 1=، وعلامة = داخل الرسالة لن تُحسب Parameter إضافي.</div>
       <div class="toggle-row" style="margin-top:8px">
         <label title="يحوّل المتغيرات متعددة الأسطر لسطر واحد آمن لواتساب — يمنع رفض Meta للرسالة (#100 Invalid parameter)">
           ✨ تنظيف تلقائي للمتغيرات قبل الإرسال
@@ -1547,30 +1547,46 @@ function parseCSV(text) {
   }).filter(r => r.phone_number || r.name);
 }
 
-function handleFile(input) {
+async function decodeCsvFile(file) {
+  const bytes = await file.arrayBuffer();
+  try {
+    return {
+      text: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+      encoding: 'UTF-8',
+    };
+  } catch (_) {
+    return {
+      text: new TextDecoder('windows-1256').decode(bytes),
+      encoding: 'Windows-1256',
+    };
+  }
+}
+
+async function handleFile(input) {
   const f = input.files[0];
   if (!f) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      csvData = parseCSV(e.target.result);
-      $('fileName').textContent = `${f.name} — ${csvData.length} contact`;
-      $('fileName').style.display = 'inline-block';
-      $('clearBtn').style.display = 'block';
-      $('runBtn').disabled = false;
-      stat('sTotal', csvData.length);
-      stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
-      $('progBar').style.width = '0%';
-      $('statsWrap').style.display = 'block';
-      log(`قرأت ${csvData.length} contacts من "${f.name}"`, 'ok');
-      log(`الأعمدة: ${Object.keys(csvData[0] || {}).join(', ')}`, 'inf');
-      if (currentAssignmentTargets().length) buildAgentMappingUI();
-      updateReplyRoutingStatus();
-    } catch(err) {
-      log(`خطأ في قراءة الملف: ${err.message}`, 'err');
+  try {
+    const decoded = await decodeCsvFile(f);
+    csvData = parseCSV(decoded.text);
+    $('fileName').textContent = `${f.name} — ${csvData.length} contact`;
+    $('fileName').style.display = 'inline-block';
+    $('clearBtn').style.display = 'block';
+    $('runBtn').disabled = false;
+    stat('sTotal', csvData.length);
+    stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
+    $('progBar').style.width = '0%';
+    $('statsWrap').style.display = 'block';
+    log(`قرأت ${csvData.length} contacts من "${f.name}" (${decoded.encoding})`, 'ok');
+    log(`الأعمدة: ${Object.keys(csvData[0] || {}).join(', ')}`, 'inf');
+    const suspiciousNames = csvData.filter(row => /[?�]/.test(String(row.name || ''))).length;
+    if (suspiciousNames) {
+      log(`تنبيه: ${suspiciousNames} اسم في الملف يحتوي ? أو حرف ترميز غير صالح من المصدر نفسه. أرقام الهاتف ما زالت قابلة للاستخدام.`, 'warn');
     }
-  };
-  reader.readAsText(f, 'UTF-8');
+    if (currentAssignmentTargets().length) buildAgentMappingUI();
+    updateReplyRoutingStatus();
+  } catch(err) {
+    log(`خطأ في قراءة الملف: ${err.message}`, 'err');
+  }
 }
 
 const drop = $('drop');
@@ -2097,16 +2113,19 @@ function parseParamMap(text) {
       if (lastKey) params[lastKey] += '\n';
       return;
     }
-    if (trimmed.startsWith('#')) return;
+    if (!lastKey && trimmed.startsWith('#')) return;
     const eq = trimmed.indexOf('=');
-    if (eq === -1) {
-      // سطر بدون = → continuation لقيمة المتغير السابق (يسمح بقيم متعددة الأسطر)
-      if (lastKey) params[lastKey] += '\n' + trimmed;
+    const key = eq >= 0 ? normalizeTemplateVariableKey(trimmed.slice(0, eq)) : '';
+    const value = eq >= 0 ? trimmed.slice(eq + 1).trim() : '';
+    const validKey = /^\d+$/.test(key) || /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+    if (eq >= 0 && validKey && value) {
+      params[key] = value;
+      lastKey = key;
       return;
     }
-    const key = normalizeTemplateVariableKey(trimmed.slice(0, eq));
-    const value = trimmed.slice(eq + 1).trim();
-    if (key && value) { params[key] = value; lastKey = key; }
+    // علامة = داخل نص الرسالة ليست بداية parameter جديد. نحتفظ
+    // بالسطر كاملًا كجزء من قيمة المتغير السابق.
+    if (lastKey) params[lastKey] += '\n' + trimmed;
   });
   return params;
 }
@@ -2193,14 +2212,19 @@ function missingTemplateMappings(row) {
 
 function assertTemplateMappings(rows) {
   const variables = currentTemplateVariables();
-  if (!variables.length) return true;
   const mapping = parseParamMap($('bodyParams').value);
+  const mappingKeys = Object.keys(mapping);
   const missingKeys = variables.filter(variable => !Object.prototype.hasOwnProperty.call(mapping, variable));
-  if (missingKeys.length) {
-    log(`✗ التيمبلت محتاج متغيرات مش معمولة mapping: ${missingKeys.join(', ')}`, 'err');
-    log('اكتبها في Body Variables Mapping بالشكل ده: 1=name أو 2=course_name', 'warn');
+  const unexpectedKeys = mappingKeys.filter(key => !variables.includes(key));
+  if (missingKeys.length || unexpectedKeys.length || mappingKeys.length !== variables.length) {
+    log(
+      `✗ عدد متغيرات التيمبلت غير مطابق: التيمبلت محتاج ${variables.length} (${variables.join(', ') || 'بدون متغيرات'}) والـMapping بيرسل ${mappingKeys.length} (${mappingKeys.join(', ') || 'بدون'})`,
+      'err'
+    );
+    log('كل Parameter يبدأ بسطر مستقل: 1=name أو 1=النص. علامة = داخل نص الرسالة مسموحة ولن تُحسب Parameter جديد.', 'warn');
     return false;
   }
+  if (!variables.length) return true;
   const badRows = rows
     .map((row, index) => ({ index, name: row.name || row.phone_number, missing: missingTemplateMappings(row) }))
     .filter(item => item.missing.length);

@@ -98,6 +98,17 @@ Campaign marker updates and first-reply handling share a per-conversation lock,
 so the implementation stays compatible with older Chatwoot installations while
 protecting very fast replies from being reactivated by a late send update.
 
+## Template parameter preflight
+
+Before a send job starts, the server reads the approved template from the
+selected WhatsApp Inbox and compares its BODY placeholders with `Body Variables
+Mapping`. The job stops before contacting customers when the template is
+missing, unapproved, or the parameter count does not match.
+
+Multiline parameter values may contain `=` characters. Only mapping headers such
+as `1=value`, `2=value`, or `customer_name=value` start a new parameter. CSV
+uploads are decoded as UTF-8 first and fall back to Windows-1256 for Arabic files.
+
 Add this webhook in Chatwoot:
 
 ```text

@@ -11,6 +11,13 @@ import {
   normalizeReplyRoutingRules,
   resolveReplyRoutingRule,
 } from './replyRoutingRules.js';
+import {
+  extractTemplateVariables,
+  findApprovedTemplateDefinition,
+  listApprovedTemplateNames,
+  normalizeTemplateVariableKey,
+  parseParamMap,
+} from './templateParams.js';
 import { withConversationLock } from './conversationLocks.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
@@ -458,11 +465,18 @@ async function runSendJob(job, runtime) {
   if (!labelName) throw new Error('Label name is required');
   if (!inboxId) throw new Error('WhatsApp inbox is required');
   if (!templateName) throw new Error('Template name is required');
+  const templateDefinition = await loadTemplateDefinition(job, runtime);
+  runtime.templateDefinition = templateDefinition;
+  assertTemplateMappings(rows, settings, templateDefinition.bodyVariables);
   assertReplyAssignmentSettings(settings);
   await ensureLabel(job, runtime.config, labelName);
   await assertReplyAssignmentTargetsExist(job, runtime);
   if (attrCol) ensureColumnExists(rows, attrCol, 'Custom attribute column');
-  assertTemplateMappings(rows, settings);
+  await logJob(
+    job,
+    `Template preflight passed: ${templateDefinition.name}/${templateDefinition.language}; body params=${templateDefinition.bodyVariables.length}`,
+    'ok'
+  );
 
   await logJob(job, `Send started: ${rows.length} contacts, rate=${rate}/min, delay=${sendDelay}ms`, 'info');
   await logJob(job, `Duplicate key: ${campaignKey}`, 'info');
@@ -803,7 +817,7 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     status: 'pending',
   });
 
-  const payload = buildTemplatePayload(row, settings);
+  const payload = buildTemplatePayload(row, settings, runtime.templateDefinition);
   let r;
   let previousAssignment = null;
   try {
@@ -1360,7 +1374,31 @@ function describeReplyRoutingRule(rule) {
   return `${rule.attributeKey} ${rule.operator} ${rule.value}`;
 }
 
-function buildTemplatePayload(row, settings) {
+async function loadTemplateDefinition(job, runtime) {
+  const { config, settings } = runtime;
+  const r = await cwFetch(
+    job,
+    config,
+    `/api/v1/accounts/${config.accountId}/inboxes/${settings.inboxId}`,
+    'GET'
+  );
+  if (!r.ok) {
+    throw new Error(`Template preflight could not read Inbox #${settings.inboxId}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+
+  const definition = findApprovedTemplateDefinition(r.data, settings.templateName, settings.templateLang);
+  if (definition) return definition;
+
+  const available = listApprovedTemplateNames(r.data);
+  const suffix = available.length
+    ? ` Available approved templates: ${available.slice(0, 20).join(', ')}`
+    : ' No approved templates were returned by this Inbox.';
+  throw new Error(
+    `Template "${settings.templateName}" (${settings.templateLang}) is not approved or does not exist in Inbox #${settings.inboxId}.${suffix}`
+  );
+}
+
+function buildTemplatePayload(row, settings, templateDefinition = null) {
   const body = buildBodyParams(row, settings);
   const processed = {};
   if (Object.keys(body).length) processed.body = body;
@@ -1368,43 +1406,18 @@ function buildTemplatePayload(row, settings) {
     processed.header = { media_url: settings.headerMediaUrl, media_type: settings.headerMediaType };
   }
   return {
-    content: renderMessageContent(row, settings),
+    content: renderMessageContent(row, settings, templateDefinition?.body),
     message_type: 'outgoing',
     private: false,
     content_type: 'text',
     content_attributes: {},
     template_params: {
-      name: settings.templateName,
-      category: settings.templateCategory,
-      language: settings.templateLang,
+      name: templateDefinition?.name || settings.templateName,
+      category: templateDefinition?.category || settings.templateCategory,
+      language: templateDefinition?.language || settings.templateLang,
       processed_params: processed,
     },
   };
-}
-
-function parseParamMap(text) {
-  const params = {};
-  let lastKey = null;
-  String(text || '').split(/\r?\n/).forEach((line) => {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      if (lastKey) params[lastKey] += '\n';
-      return;
-    }
-    if (trimmed.startsWith('#')) return;
-    const eq = trimmed.indexOf('=');
-    if (eq === -1) {
-      if (lastKey) params[lastKey] += `\n${trimmed}`;
-      return;
-    }
-    const key = normalizeTemplateVariableKey(trimmed.slice(0, eq));
-    const value = trimmed.slice(eq + 1).trim();
-    if (key && value) {
-      params[key] = value;
-      lastKey = key;
-    }
-  });
-  return params;
 }
 
 function buildBodyParams(row, settings) {
@@ -1417,8 +1430,8 @@ function buildBodyParams(row, settings) {
   return body;
 }
 
-function renderMessageContent(row, settings) {
-  let content = String(settings.messageContent || '').trim();
+function renderMessageContent(row, settings, templateBody = '') {
+  let content = String(templateBody || settings.messageContent || '').trim();
   const body = buildBodyParams(row, settings);
   Object.keys(body).forEach((key) => {
     content = content.replace(new RegExp(`\\{\\{\\s*${escapeRegExp(key)}\\s*\\}\\}`, 'g'), body[key]);
@@ -1426,24 +1439,24 @@ function renderMessageContent(row, settings) {
   return content || `WhatsApp template: ${settings.templateName}`;
 }
 
-function assertTemplateMappings(rows, settings) {
-  const variables = extractTemplateVariables(settings.messageContent).map(normalizeTemplateVariableKey);
-  if (!variables.length) return true;
+function assertTemplateMappings(rows, settings, expectedVariables = null) {
+  const variables = (expectedVariables || extractTemplateVariables(settings.messageContent))
+    .map(normalizeTemplateVariableKey);
   const mapping = parseParamMap(settings.bodyParams);
+  const mappingKeys = Object.keys(mapping);
   const missingKeys = variables.filter((variable) => !Object.prototype.hasOwnProperty.call(mapping, variable));
-  if (missingKeys.length) throw new Error(`Missing template variable mapping: ${missingKeys.join(', ')}`);
+  const unexpectedKeys = mappingKeys.filter((key) => !variables.includes(key));
+  if (missingKeys.length || unexpectedKeys.length || mappingKeys.length !== variables.length) {
+    const expected = variables.length ? variables.join(', ') : 'none';
+    const actual = mappingKeys.length ? mappingKeys.join(', ') : 'none';
+    throw new Error(
+      `Template "${settings.templateName}" expects ${variables.length} BODY parameter(s) [${expected}], but Body Variables Mapping sends ${mappingKeys.length} [${actual}].`
+    );
+  }
+  if (!variables.length) return true;
   const badRow = rows.find((row) => variables.some((variable) => !String(resolveMappedValue(row, mapping[variable]) || '').trim()));
   if (badRow) throw new Error(`Empty template variable value in row: ${badRow.name || badRow.phone_number}`);
   return true;
-}
-
-function extractTemplateVariables(text) {
-  const matches = String(text || '').match(/\{\{\s*[^}]+\s*\}\}/g) || [];
-  return [...new Set(matches.map((item) => item.replace(/[{}]/g, '').trim()))];
-}
-
-function normalizeTemplateVariableKey(value) {
-  return String(value || '').trim().replace(/^\{\{\s*/, '').replace(/\s*\}\}$/, '').trim();
 }
 
 function resolveMappedValue(row, token) {
