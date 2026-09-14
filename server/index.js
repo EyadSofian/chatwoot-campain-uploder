@@ -90,7 +90,15 @@ function buildProxyHeaders(reqHeaders, hostname) {
   return headers;
 }
 
+// Conversation custom attributes are written only by the server's locked
+// read-merge-write writer (server/campaignAttributeWriter.js). A browser POST of
+// a stale hash would erase attributes owned by other integrations.
+const CONVERSATION_ATTRIBUTE_WRITE = /^\/accounts\/\d+\/conversations\/\d+\/custom_attributes\/?(?:\?|$)/;
+
 app.use('/api/v1', (req, res) => {
+  if (req.method !== 'GET' && CONVERSATION_ATTRIBUTE_WRITE.test(req.url)) {
+    return res.status(403).json({ error: 'Conversation custom attributes can only be written by server jobs' });
+  }
   if (!CHATWOOT_API_TOKEN) {
     return res.status(500).json({ error: 'CHATWOOT_API_TOKEN is not configured on the server' });
   }

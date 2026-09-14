@@ -22,3 +22,21 @@ test('conversation work is serialized for the same account and conversation', as
   await Promise.all([first, second]);
   assert.deepEqual(events, ['first:start', 'first:end', 'second:start']);
 });
+
+test('a failing lock body rejects only for its caller and releases the lock', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    await assert.rejects(
+      withConversationLock('2', '901', async () => { throw new Error('write failed'); }),
+      /write failed/
+    );
+    const next = await withConversationLock('2', '901', async () => 'next ran');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(next, 'next ran');
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});

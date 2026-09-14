@@ -5,6 +5,7 @@ import {
   isIncomingMessage,
   readReplyAssignmentMarker,
 } from '../server/replyRouter.js';
+import { createFakeChatwoot } from './helpers/fakeChatwoot.js';
 
 test('reply router accepts only public incoming message-created events', () => {
   assert.equal(isIncomingMessage({ event: 'message_created', message_type: 'incoming' }), true);
@@ -57,10 +58,12 @@ test('reply router rejects completed and expired reply markers', () => {
   }).reason, 'missing_campaign_expiry');
 });
 
-test('first incoming reply assigns the resolved Team and completes the marker', async (t) => {
+function useFakeChatwoot(t) {
+  const chatwoot = createFakeChatwoot();
   const originalFetch = global.fetch;
   const originalUrl = process.env.CHATWOOT_URL;
   const originalToken = process.env.CHATWOOT_API_TOKEN;
+  global.fetch = chatwoot.fetch;
   process.env.CHATWOOT_URL = 'https://chatwoot.test';
   process.env.CHATWOOT_API_TOKEN = 'test-token';
 
@@ -71,35 +74,28 @@ test('first incoming reply assigns the resolved Team and completes the marker', 
     if (originalToken === undefined) delete process.env.CHATWOOT_API_TOKEN;
     else process.env.CHATWOOT_API_TOKEN = originalToken;
   });
+  return chatwoot;
+}
 
-  const markerAttributes = {
-    api_campaign_reply_assign_mode: 'on_reply_team',
-    api_campaign_reply_team_id: '77',
-    api_campaign_reply_team_name: 'Sales',
-    api_campaign_reply_pending: true,
-    api_campaign_reply_rule_id: 'revit',
-    api_campaign_reply_rule_name: 'Revit leads',
-    api_campaign_active_until: '2099-06-20T10:00:00.000Z',
-  };
-  const requests = [];
-  let conversationReads = 0;
-
-  global.fetch = async (url, options = {}) => {
-    const method = options.method || 'GET';
-    const body = options.body ? JSON.parse(options.body) : null;
-    requests.push({ url: String(url), method, body });
-
-    if (method === 'GET' && String(url).endsWith('/conversations/900')) {
-      conversationReads++;
-      return new Response(JSON.stringify({
-        id: 900,
-        status: 'open',
-        custom_attributes: markerAttributes,
-        meta: conversationReads > 1 ? { assignee: { id: 12, name: 'Nour' } } : {},
-      }), { status: 200 });
-    }
-    return new Response('{}', { status: 200 });
-  };
+test('first incoming reply assigns the resolved Team and completes the marker', async (t) => {
+  const chatwoot = useFakeChatwoot(t);
+  chatwoot.addConversation({
+    id: 900,
+    attributes: {
+      api_campaign_reply_assign_mode: 'on_reply_team',
+      api_campaign_reply_team_id: '77',
+      api_campaign_reply_team_name: 'Sales',
+      api_campaign_reply_pending: true,
+      api_campaign_reply_rule_id: 'revit',
+      api_campaign_reply_rule_name: 'Revit leads',
+      api_campaign_active_until: '2099-06-20T10:00:00.000Z',
+      attribution_channel: 'whatsapp',
+    },
+  });
+  // Chatwoot's Team auto-assignment picks an available agent.
+  chatwoot.after((request) => request.path === '/conversations/900/assignments', () => {
+    chatwoot.conversations.get('900').meta.assignee = { id: 12, name: 'Nour' };
+  });
 
   const result = await handleChatwootWebhook({
     event: 'message_created',
@@ -111,55 +107,29 @@ test('first incoming reply assigns the resolved Team and completes the marker', 
   assert.equal(result.status, 'assigned');
   assert.equal(result.teamId, '77');
   assert.equal(result.assigneeId, '12');
-  assert.equal(requests[1].method, 'POST');
-  assert.deepEqual(requests[1].body, { team_id: 77 });
-  assert.match(requests[1].url, /\/conversations\/900\/assignments$/);
-  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_pending, false);
-  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_target_type, 'team');
-  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_assignee_id, '12');
+  const assignment = chatwoot.requests.find((request) => request.path === '/conversations/900/assignments');
+  assert.deepEqual(assignment.body, { team_id: 77 });
+  const attrs = chatwoot.attributes(900);
+  assert.equal(attrs.api_campaign_reply_pending, false);
+  assert.equal(attrs.api_campaign_reply_target_type, 'team');
+  assert.equal(attrs.api_campaign_reply_assignee_id, '12');
+  assert.equal(attrs.attribution_channel, 'whatsapp');
 });
 
 test('first incoming reply can assign one specific Agent', async (t) => {
-  const originalFetch = global.fetch;
-  const originalUrl = process.env.CHATWOOT_URL;
-  const originalToken = process.env.CHATWOOT_API_TOKEN;
-  process.env.CHATWOOT_URL = 'https://chatwoot.test';
-  process.env.CHATWOOT_API_TOKEN = 'test-token';
-
-  t.after(() => {
-    global.fetch = originalFetch;
-    if (originalUrl === undefined) delete process.env.CHATWOOT_URL;
-    else process.env.CHATWOOT_URL = originalUrl;
-    if (originalToken === undefined) delete process.env.CHATWOOT_API_TOKEN;
-    else process.env.CHATWOOT_API_TOKEN = originalToken;
+  const chatwoot = useFakeChatwoot(t);
+  chatwoot.addConversation({
+    id: 901,
+    attributes: {
+      api_campaign_reply_assign_mode: 'on_reply_target',
+      api_campaign_reply_target_type: 'agent',
+      api_campaign_reply_target_id: '42',
+      api_campaign_reply_target_name: 'Ahmed',
+      api_campaign_reply_pending: true,
+      api_campaign_reply_rule_id: 'revit-agent',
+      api_campaign_active_until: '2099-06-20T10:00:00.000Z',
+    },
   });
-
-  const markerAttributes = {
-    api_campaign_reply_assign_mode: 'on_reply_target',
-    api_campaign_reply_target_type: 'agent',
-    api_campaign_reply_target_id: '42',
-    api_campaign_reply_target_name: 'Ahmed',
-    api_campaign_reply_pending: true,
-    api_campaign_reply_rule_id: 'revit-agent',
-    api_campaign_active_until: '2099-06-20T10:00:00.000Z',
-  };
-  const requests = [];
-
-  global.fetch = async (url, options = {}) => {
-    const method = options.method || 'GET';
-    const body = options.body ? JSON.parse(options.body) : null;
-    requests.push({ url: String(url), method, body });
-
-    if (method === 'GET' && String(url).endsWith('/conversations/901')) {
-      return new Response(JSON.stringify({
-        id: 901,
-        status: 'open',
-        custom_attributes: markerAttributes,
-        meta: requests.length > 2 ? { assignee: { id: 42, name: 'Ahmed' } } : {},
-      }), { status: 200 });
-    }
-    return new Response('{}', { status: 200 });
-  };
 
   const result = await handleChatwootWebhook({
     event: 'message_created',
@@ -173,7 +143,9 @@ test('first incoming reply can assign one specific Agent', async (t) => {
   assert.equal(result.targetId, '42');
   assert.equal(result.teamId, '');
   assert.equal(result.assigneeId, '42');
-  assert.deepEqual(requests[1].body, { assignee_id: 42 });
-  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_target_type, 'agent');
-  assert.equal(requests[3].body.custom_attributes.api_campaign_reply_team_id, undefined);
+  const assignment = chatwoot.requests.find((request) => request.path === '/conversations/901/assignments');
+  assert.deepEqual(assignment.body, { assignee_id: 42 });
+  const attrs = chatwoot.attributes(901);
+  assert.equal(attrs.api_campaign_reply_target_type, 'agent');
+  assert.equal(attrs.api_campaign_reply_team_id, undefined);
 });

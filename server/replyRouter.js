@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'crypto';
 import { withConversationLock } from './conversationLocks.js';
+import { updateCampaignAttributesLocked } from './campaignAttributeWriter.js';
 
 export function registerReplyRouter(app) {
   app.post('/api/webhooks/chatwoot', async (req, res) => {
@@ -55,13 +56,7 @@ export async function handleChatwootWebhook(payload) {
 
     const updated = await fetchConversation(config, conversationId);
     const assignee = extractAssignee(updated);
-    await markConversationAssigned(
-      config,
-      conversationId,
-      updated?.custom_attributes || attrs,
-      marker,
-      assignee
-    );
+    await markConversationAssigned(config, conversationId, marker, assignee);
 
     return {
       status: 'assigned',
@@ -176,38 +171,51 @@ async function assignConversationToTarget(config, conversationId, targetType, ta
   );
 }
 
-async function markConversationAssigned(config, conversationId, attrs, marker, assignee) {
-  const merged = {
-    ...(attrs || {}),
+// Runs inside handleChatwootWebhook's conversation lock, so it uses the locked
+// writer: fresh read, merge only campaign-owned keys, write, verify.
+async function markConversationAssigned(config, conversationId, marker, assignee) {
+  const changes = buildReplyAssignedChanges(marker, assignee, new Date());
+  await updateCampaignAttributesLocked({
+    conversationId,
+    readConversation: () => fetchConversation(config, conversationId),
+    writeAttributes: (attributes) => chatwootFetch(
+      config,
+      `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`,
+      'POST',
+      { custom_attributes: attributes }
+    ),
+    buildChanges: () => changes,
+    onRetry: ({ attempt, problems }) => console.warn(
+      `[reply-router] Conversation #${conversationId} marker did not verify on attempt ${attempt}: ${problems.join('; ')}`
+    ),
+  });
+}
+
+export function buildReplyAssignedChanges(marker, assignee, now = new Date()) {
+  const set = {
     api_campaign_reply_pending: false,
-    api_campaign_reply_assigned_at: new Date().toISOString(),
+    api_campaign_reply_assigned_at: now.toISOString(),
     api_campaign_reply_target_type: marker.targetType,
     api_campaign_reply_target_id: String(marker.targetId),
     api_campaign_reply_target_name: marker.targetName,
   };
+  const remove = [];
 
   if (marker.targetType === 'team') {
-    merged.api_campaign_reply_team_id = String(marker.targetId);
-    merged.api_campaign_reply_team_name = marker.targetName;
+    set.api_campaign_reply_team_id = String(marker.targetId);
+    set.api_campaign_reply_team_name = marker.targetName;
   } else {
-    delete merged.api_campaign_reply_team_id;
-    delete merged.api_campaign_reply_team_name;
+    remove.push('api_campaign_reply_team_id', 'api_campaign_reply_team_name');
   }
 
   if (assignee?.id) {
-    merged.api_campaign_reply_assignee_id = String(assignee.id);
-    merged.api_campaign_reply_assignee_name = agentName(assignee);
+    set.api_campaign_reply_assignee_id = String(assignee.id);
+    set.api_campaign_reply_assignee_name = agentName(assignee);
   } else {
-    delete merged.api_campaign_reply_assignee_id;
-    delete merged.api_campaign_reply_assignee_name;
+    remove.push('api_campaign_reply_assignee_id', 'api_campaign_reply_assignee_name');
   }
 
-  await chatwootFetch(
-    config,
-    `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`,
-    'POST',
-    { custom_attributes: merged }
-  );
+  return { set, remove };
 }
 
 async function openConversationIfNeeded(config, conversationId, currentStatus) {
