@@ -3,10 +3,12 @@ import { createReadStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import {
-  buildCampaignMarkerAttributes,
+  buildCampaignMarkerChanges,
   getCampaignMarkerTtlSeconds,
-  getCampaignPendingMarkerTtlSeconds
+  getCampaignPendingMarkerTtlSeconds,
+  pickCampaignOwnedAttributes
 } from './campaignMarkers.js';
+import { updateCampaignAttributes } from './campaignAttributeWriter.js';
 import {
   normalizeReplyRoutingRules,
   resolveReplyRoutingRule,
@@ -18,7 +20,6 @@ import {
   normalizeTemplateVariableKey,
   parseParamMap,
 } from './templateParams.js';
-import { withConversationLock } from './conversationLocks.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -773,7 +774,7 @@ async function sendTemplateForRowWithRetry(job, runtime, row, campaignKey) {
   }
 }
 
-async function sendTemplateForRow(job, runtime, row, campaignKey) {
+export async function sendTemplateForRow(job, runtime, row, campaignKey) {
   const { config, settings } = runtime;
   const result = await upsertContact(job, runtime, row, settings.attrCol);
   if (!result) throw new Error('Contact was not found/created');
@@ -811,11 +812,13 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
     await applyPostSendConversationStatus(job, runtime, conv.id, details?.status || conv.status);
   }
 
-  let markerAttrs = await updateCampaignMarkerSafely(job, config, conv.id, {
-    attrs,
+  const pending = await updateCampaignMarkerSafely(job, config, conv.id, {
     ...marker,
     status: 'pending',
   });
+  // Campaign-owned state from just before this send, so a failed send can
+  // restore an older campaign's active window and reply route.
+  const previousCampaignAttrs = pickCampaignOwnedAttributes(pending.before);
 
   const payload = buildTemplatePayload(row, settings, runtime.templateDefinition);
   let r;
@@ -836,8 +839,8 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
   } catch (error) {
     try {
       await updateCampaignMarkerSafely(job, config, conv.id, {
-        attrs,
         ...marker,
+        previousAttrs: previousCampaignAttrs,
         status: 'failed',
         error: error.message
       });
@@ -853,8 +856,7 @@ async function sendTemplateForRow(job, runtime, row, campaignKey) {
   }
 
   try {
-    markerAttrs = await updateCampaignMarkerSafely(job, config, conv.id, {
-      attrs: markerAttrs,
+    await updateCampaignMarkerSafely(job, config, conv.id, {
       ...marker,
       status: 'sent',
     });
@@ -885,10 +887,12 @@ async function ensureCampaignConversation(job, runtime, contactId, row, marker) 
     inbox_id: Number(settings.inboxId),
     contact_id: contactId,
     status: 'open',
-    custom_attributes: buildCampaignMarkerAttributes({
+    // A brand-new conversation has no other attributes yet, so the owned
+    // pending marker is the whole hash.
+    custom_attributes: buildCampaignMarkerChanges({
       ...marker,
       status: 'pending'
-    }),
+    }).set,
   });
   if (!r.ok) throw new Error(`Conversation create failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
   const conv = r.data.payload || r.data;
@@ -1041,29 +1045,41 @@ function normalizeLabelList(labels) {
     .filter(Boolean);
 }
 
-async function updateCampaignMarker(job, config, conversationId, marker) {
-  const merged = buildCampaignMarkerAttributes(marker);
-  const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
-    custom_attributes: merged
+// Every campaign marker write (pending, sent, failed, with or without a reply
+// assignment) goes through the locked read-merge-write-verify writer.
+async function updateCampaignMarkerSafely(job, config, conversationId, marker) {
+  return updateCampaignAttributes({
+    accountId: config.accountId,
+    conversationId,
+    readConversation: () => requireConversationDetails(job, config, conversationId),
+    writeAttributes: (attributes) => postConversationAttributes(job, config, conversationId, attributes),
+    buildChanges: (attrs) => buildCampaignMarkerChanges({ ...marker, attrs }),
+    onRetry: ({ attempt, problems }) => logJob(
+      job,
+      `Campaign marker on conversation #${conversationId} did not verify on attempt ${attempt} (${problems.join('; ')}); retrying`,
+      'warn'
+    ),
   });
-  if (!r.ok) {
-    throw new Error(`Campaign marker failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
-  }
-  return r.data?.custom_attributes || r.data?.payload?.custom_attributes || merged;
 }
 
-async function updateCampaignMarkerSafely(job, config, conversationId, marker) {
-  if (!marker.replyAssignment) {
-    return updateCampaignMarker(job, config, conversationId, marker);
+// No transport-level retries: resending this hash seconds later could erase
+// keys written in between. Transient failures are marked retryable so the
+// writer starts over with a fresh read.
+async function postConversationAttributes(job, config, conversationId, attributes) {
+  let r;
+  try {
+    r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/conversations/${conversationId}/custom_attributes`, 'POST', {
+      custom_attributes: attributes
+    }, 0);
+  } catch (err) {
+    err.retryable = true;
+    throw err;
   }
-
-  return withConversationLock(config.accountId, conversationId, async () => {
-    const latest = await requireConversationDetails(job, config, conversationId);
-    return updateCampaignMarker(job, config, conversationId, {
-      ...marker,
-      attrs: latest.custom_attributes || {},
-    });
-  });
+  if (!r.ok) {
+    const err = new Error(`Campaign marker failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+    err.retryable = TRANSIENT_STATUS.has(r.status);
+    throw err;
+  }
 }
 
 async function requireConversationDetails(job, config, conversationId) {
