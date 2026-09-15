@@ -137,6 +137,25 @@ URL: https://YOUR-APP-DOMAIN/api/webhooks/chatwoot?token=YOUR_SECRET
 10. For a real test, disable `Dry Run`, keep `Test Mode`, and enable confirmation.
 11. After two successful test numbers, disable `Test Mode` for the full campaign.
 
+## Attribute-Safety Dry Run (no customer contact)
+
+Before any real send, prove that campaign markers cannot erase other
+integrations' conversation data — without messaging anyone:
+
+```bash
+CHATWOOT_BASE_URL=… CHATWOOT_API_TOKEN=… CHATWOOT_ACCOUNT_ID=… \
+node scripts/attribute-safety-dryrun.js --limit 200 --inboxes 24,25,27
+```
+
+It reads real conversations and labels (GET only), simulates the pending, sent
+and failed marker writes with the production merge code, and fails if any
+attribution, `odoo_*`, bot (`bp_*`, `majed_*`), `api_campaign_*` attribute or
+label would be dropped or changed. Output contains conversation IDs and key
+family counts only. Use `--ids 156866,70257` to check specific conversations.
+
+A real WhatsApp delivery is only needed to prove provider delivery itself, not
+attribute safety.
+
 ## CSV Format
 
 Minimum:
