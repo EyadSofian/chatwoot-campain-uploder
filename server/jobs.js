@@ -20,6 +20,11 @@ import {
   normalizeTemplateVariableKey,
   parseParamMap,
 } from './templateParams.js';
+import {
+  classifyScheduledJob,
+  getScheduledJobMaxLateMs,
+  parseScheduledAt,
+} from './scheduledJobs.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -39,8 +44,16 @@ const maxParallelContactQueues = clampInt(process.env.MAX_PARALLEL_CONTACT_QUEUE
 const sendQueueLimiter = createLimiter(maxParallelSendQueues);
 const contactQueueLimiter = createLimiter(maxParallelContactQueues);
 let orphanedJobsRecovered = false;
+// id -> scheduledAt for jobs waiting on the clock. Rebuilt from disk on boot so
+// the scheduler tick never has to read every job file.
+const scheduledJobs = new Map();
+const SCHEDULER_TICK_MS = clampInt(process.env.SCHEDULER_TICK_MS || 15000, 1000, 300000);
+let schedulerTimer = null;
+let schedulerTickRunning = false;
 
 export function registerJobRoutes(app) {
+  startScheduler();
+
   app.use('/api/jobs', async (_req, res, next) => {
     try {
       await ensureStore();
@@ -114,7 +127,12 @@ export function registerJobRoutes(app) {
     const active = activeJobs.get(req.params.id);
     if (active) active.stopRequested = true;
     job.stopRequested = true;
-    if (!active && ['queued', 'running'].includes(job.status)) {
+    if (job.status === 'scheduled') {
+      scheduledJobs.delete(job.id);
+      job.status = 'cancelled';
+      job.lastError = 'Scheduled job cancelled before it started';
+      await logJob(job, job.lastError, 'warn').catch(() => {});
+    } else if (!active && ['queued', 'running'].includes(job.status)) {
       job.status = 'interrupted';
       job.lastError = 'Job is not active on this server. It was probably interrupted by a restart or redeploy.';
     } else if (job.status === 'queued') {
@@ -132,7 +150,7 @@ export function registerJobRoutes(app) {
       if (isActiveJob(job)) {
         return res.status(409).json({ error: 'Job is already active' });
       }
-      if (!['queued', 'stopped', 'interrupted'].includes(job.status)) {
+      if (!['queued', 'stopped', 'interrupted', 'scheduled', 'missed', 'cancelled'].includes(job.status)) {
         return res.status(409).json({ error: `Job cannot be started from status ${job.status}` });
       }
       if ((job.processed || 0) > 0) {
@@ -143,13 +161,17 @@ export function registerJobRoutes(app) {
       if (!input?.rows?.length) {
         return res.status(409).json({ error: 'Saved job input is missing. Start a new upload/send job.' });
       }
+      const reason = job.scheduledAt && ['scheduled', 'missed', 'cancelled'].includes(job.status)
+        ? `Scheduled job (${job.scheduledAt}) started manually`
+        : 'Queued job started manually';
+      scheduledJobs.delete(job.id);
       await startStoredJob(job, {
         ...input,
         settings: {
           ...(input.settings || {}),
           ...(req.body?.settings || {}),
         },
-      }, 'Queued job started manually');
+      }, reason);
       res.status(202).json({ ok: true, job: await readJob(job.id) });
     } catch (err) {
       res.status(err.status || 500).json({ error: err.message });
@@ -162,6 +184,9 @@ export function registerJobRoutes(app) {
       if (!job) return res.status(404).json({ error: 'Job not found' });
       if (isActiveJob(job)) {
         return res.status(409).json({ error: 'Job is still active. Stop it first if you really want to requeue.' });
+      }
+      if (job.status === 'scheduled') {
+        return res.status(409).json({ error: 'Job is scheduled and has not started yet. Cancel it or start it now instead.' });
       }
       const input = await readJobInput(job.id);
       if (!input?.rows?.length) {
@@ -254,6 +279,10 @@ async function recoverOrphanedJobs() {
   const files = await fs.readdir(JOBS_DIR).catch(() => []);
   for (const file of files.filter((item) => item.endsWith('.json') && !item.endsWith('-input.json'))) {
     const job = await readJob(path.basename(file, '.json'));
+    if (job?.status === 'scheduled') {
+      scheduledJobs.set(job.id, job.scheduledAt);
+      continue;
+    }
     if (!job || !['queued', 'running'].includes(job.status) || activeJobs.has(job.id)) continue;
 
     if (job.status === 'queued') {
@@ -333,11 +362,17 @@ async function createJob(type, body = {}) {
   }
   const settings = normalizeSettings(body.settings || {});
   const queueInfo = getQueueInfo(type, settings, config);
+  const scheduledAt = parseScheduledAt(body.scheduledAt);
+  if (scheduledAt && type !== 'send') {
+    const err = new Error('Only send jobs can be scheduled');
+    err.status = 400;
+    throw err;
+  }
 
   const job = {
     id: randomUUID(),
     type,
-    status: 'queued',
+    status: scheduledAt ? 'scheduled' : 'queued',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     total: rows.length,
@@ -352,6 +387,7 @@ async function createJob(type, body = {}) {
     },
     queueKey: queueInfo.key,
     queueLabel: queueInfo.label,
+    ...(scheduledAt ? { scheduledAt } : {}),
     operatorName: settings.operatorName,
     settings: sanitizeSettings(body.settings || {}),
     stopRequested: false,
@@ -363,10 +399,30 @@ async function createJob(type, body = {}) {
   await writeJob(job);
   await writeJobInput(job.id, type, rows, body.settings || {});
   await clearJobFiles(job.id);
-  await logJob(job, `Job queued: ${type} (${rows.length} rows) — ${queueInfo.label}`, 'info');
+  await logJob(
+    job,
+    scheduledAt
+      ? `Job scheduled: ${type} (${rows.length} rows) — ${queueInfo.label} — runs at ${scheduledAt}`
+      : `Job queued: ${type} (${rows.length} rows) — ${queueInfo.label}`,
+    'info'
+  );
   if (settings.operatorName) await logJob(job, `Operator: ${settings.operatorName}`, 'info');
 
   const runtime = { config, rows, settings, stopRequested: false, queueKey: queueInfo.key, queueGroup: queueInfo.group };
+  if (scheduledAt) {
+    try {
+      await preflightSendJob(job, runtime);
+    } catch (err) {
+      await discardJob(job.id);
+      err.status = err.status || 400;
+      err.message = `Schedule rejected by preflight: ${err.message}`;
+      throw err;
+    }
+    await logJob(job, 'Preflight passed. Template, mappings and routing are re-checked when the job starts.', 'ok');
+    scheduledJobs.set(job.id, scheduledAt);
+    return { publicJob: job };
+  }
+
   activeJobs.set(job.id, runtime);
   enqueueJob(job.id, queueInfo.key, queueInfo.group);
 
@@ -456,23 +512,14 @@ async function runUploadJob(job, runtime) {
 async function runSendJob(job, runtime) {
   const { rows, settings } = runtime;
   const labelName = settings.labelName;
-  const attrCol = settings.attrCol;
-  const inboxId = settings.inboxId;
   const templateName = settings.templateName;
   const rate = Math.max(1, Math.min(Number(settings.sendRateLimit || 60), 100));
   const sendDelay = Math.ceil(60000 / rate);
   const campaignKey = `api_sent_${safeKey(labelName)}_${safeKey(templateName)}`;
 
-  if (!labelName) throw new Error('Label name is required');
-  if (!inboxId) throw new Error('WhatsApp inbox is required');
-  if (!templateName) throw new Error('Template name is required');
-  const templateDefinition = await loadTemplateDefinition(job, runtime);
+  const templateDefinition = await preflightSendJob(job, runtime);
   runtime.templateDefinition = templateDefinition;
-  assertTemplateMappings(rows, settings, templateDefinition.bodyVariables);
-  assertReplyAssignmentSettings(settings);
   await ensureLabel(job, runtime.config, labelName);
-  await assertReplyAssignmentTargetsExist(job, runtime);
-  if (attrCol) ensureColumnExists(rows, attrCol, 'Custom attribute column');
   await logJob(
     job,
     `Template preflight passed: ${templateDefinition.name}/${templateDefinition.language}; body params=${templateDefinition.bodyVariables.length}`,
@@ -508,6 +555,70 @@ async function runSendJob(job, runtime) {
     job.updatedAt = new Date().toISOString();
     await writeJob(job);
     if (i + 1 < rows.length && sendDelay) await sleep(sendDelay);
+  }
+}
+
+// Read-only checks shared by scheduling and the real run, so a broken template
+// or routing rule is rejected when the operator schedules, not at send time.
+async function preflightSendJob(job, runtime) {
+  const { rows, settings } = runtime;
+  if (!settings.labelName) throw new Error('Label name is required');
+  if (!settings.inboxId) throw new Error('WhatsApp inbox is required');
+  if (!settings.templateName) throw new Error('Template name is required');
+  const templateDefinition = await loadTemplateDefinition(job, runtime);
+  assertTemplateMappings(rows, settings, templateDefinition.bodyVariables);
+  assertReplyAssignmentSettings(settings);
+  await assertReplyAssignmentTargetsExist(job, runtime);
+  if (settings.attrCol) ensureColumnExists(rows, settings.attrCol, 'Custom attribute column');
+  return templateDefinition;
+}
+
+function startScheduler() {
+  if (schedulerTimer) return;
+  schedulerTimer = setInterval(() => {
+    runSchedulerTick().catch((err) => console.error('[jobs] scheduler error:', err));
+  }, SCHEDULER_TICK_MS);
+  schedulerTimer.unref?.();
+  runSchedulerTick().catch((err) => console.error('[jobs] scheduler error:', err));
+}
+
+export async function runSchedulerTick(now = Date.now()) {
+  if (schedulerTickRunning) return;
+  schedulerTickRunning = true;
+  try {
+    await ensureStore();
+    const maxLateMs = getScheduledJobMaxLateMs();
+    for (const [jobId, scheduledAt] of [...scheduledJobs]) {
+      const decision = classifyScheduledJob(scheduledAt, now, maxLateMs);
+      if (decision === 'wait') continue;
+      scheduledJobs.delete(jobId);
+
+      // Re-read: the job may have been cancelled or started manually since it was indexed.
+      const job = await readJob(jobId);
+      if (!job || job.status !== 'scheduled') continue;
+
+      if (decision === 'missed') {
+        job.status = 'missed';
+        job.lastError = `Scheduled time ${job.scheduledAt} passed while the server was offline; not sent automatically. Start it manually if it is still wanted.`;
+        job.updatedAt = new Date().toISOString();
+        await writeJob(job);
+        await logJob(job, job.lastError, 'warn').catch(() => {});
+        continue;
+      }
+
+      const input = await readJobInput(job.id);
+      if (!input?.rows?.length) {
+        job.status = 'interrupted';
+        job.lastError = 'Scheduled job cannot start because its saved input is missing.';
+        job.updatedAt = new Date().toISOString();
+        await writeJob(job);
+        await logJob(job, job.lastError, 'warn').catch(() => {});
+        continue;
+      }
+      await startStoredJob(job, input, `Scheduled time reached (${job.scheduledAt}); job queued`);
+    }
+  } finally {
+    schedulerTickRunning = false;
   }
 }
 
@@ -1743,6 +1854,15 @@ function csvEscape(value) {
 
 async function clearJobFiles(jobId) {
   await Promise.allSettled([
+    fs.rm(getJobLogPath(jobId), { force: true }),
+    fs.rm(getJobFailedPath(jobId), { force: true }),
+  ]);
+}
+
+async function discardJob(jobId) {
+  await Promise.allSettled([
+    fs.rm(getJobPath(jobId), { force: true }),
+    fs.rm(getJobInputPath(jobId), { force: true }),
     fs.rm(getJobLogPath(jobId), { force: true }),
     fs.rm(getJobFailedPath(jobId), { force: true }),
   ]);
