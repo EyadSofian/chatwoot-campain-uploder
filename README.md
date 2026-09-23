@@ -11,6 +11,7 @@ Dashboard app for Chatwoot self-hosted that can:
 - Send campaigns unassigned, then route the first customer reply to a fixed Team or to a Team selected by ordered Label/Custom Attribute rules.
 - Run contact uploads and WhatsApp sends as server-side background jobs, with uploads separated from send queues.
 - Search saved campaign jobs by label/campaign name, operator, status, or template name.
+- Schedule a WhatsApp send job to start automatically at a later time.
 
 ## Railway
 
@@ -97,6 +98,39 @@ campaign stays unassigned until the first public incoming message arrives.
 Campaign marker updates and first-reply handling share a per-conversation lock,
 so the implementation stays compatible with older Chatwoot installations while
 protecting very fast replies from being reactivated by a late send update.
+
+## Scheduled Campaigns
+
+Enable `جدولة الكامبين` above the send button, pick a date and time (browser
+local time), then press the button. The browser sends an absolute UTC instant,
+so the server's timezone never shifts the send time.
+
+- Scheduling is for real sends only: disable `Dry Run` and enable send
+  confirmation first. `Test Mode` still limits the job to two rows.
+- The template, body-variable mapping, custom attribute column and reply-routing
+  targets are verified when you schedule, and a failing schedule is rejected
+  with no job saved. They are checked again when the job starts.
+- The job waits with status `scheduled`. A server-side tick (every 15 seconds)
+  moves it into the normal per-Inbox send queue when it is due.
+- `إلغاء` cancels a scheduled job (`cancelled`). `تشغيل الآن` sends a scheduled,
+  missed or cancelled job immediately.
+- If the server was down at the scheduled time and comes back more than
+  `SCHEDULED_JOB_MAX_LATE_MINUTES` (default 60) late, the job is marked `missed`
+  and is **not** sent automatically, so customers never get a campaign at an
+  unplanned hour.
+- Scheduled jobs live in `data/jobs` (or `JOBS_DIR`). On Railway, mount a
+  persistent volume there. Without one, a redeploy erases every job that has not
+  run yet.
+
+Optional:
+
+```bash
+SCHEDULED_JOB_MAX_LATE_MINUTES=60
+SCHEDULER_TICK_MS=15000
+```
+
+API: `POST /api/jobs/send` accepts `scheduledAt` as an ISO timestamp with a
+timezone. It must be between 1 minute and 60 days from now.
 
 ## Template parameter preflight
 

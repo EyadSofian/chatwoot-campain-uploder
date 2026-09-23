@@ -217,7 +217,10 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
 .job-pill.running{color:var(--brand);border-color:var(--brand-line);background:var(--brand-soft)}
 .job-pill.completed{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
 .job-pill.failed,.job-pill.completed_with_errors{color:var(--err);border-color:var(--err);background:var(--err-soft)}
-.job-pill.interrupted{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,.12)}
+.job-pill.interrupted,.job-pill.missed{color:var(--warn);border-color:var(--warn);background:rgba(245,158,11,.12)}
+.job-pill.scheduled{color:var(--brand);border-color:var(--brand-line);background:transparent}
+.schedule-box{display:none;margin-top:6px}
+.schedule-box.show{display:block}
 @media(max-width:520px){.assign-actions,.agent-map-row{grid-template-columns:1fr}.agent-map-arrow{display:none}}
 @media(max-width:760px){.reply-rule{grid-template-columns:34px 1fr 1fr}.reply-rule-tools{grid-column:2/-1;justify-content:flex-end}.reply-rule-actions,.reply-examples{grid-template-columns:1fr}.reply-rules-head{flex-direction:column}.reply-sync-actions{justify-content:flex-start}.reply-example-note{grid-column:1}}
 @media(max-width:520px){.reply-rule{grid-template-columns:1fr}.reply-rule-order{display:none}.reply-rule-tools{grid-column:1}}
@@ -545,6 +548,18 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <option value="100">100 / دقيقة — الحد الأقصى المسموح (للأرقام عالية الجودة فقط)</option>
       </select>
     </div>
+    <div class="toggle-row">
+      <label>جدولة الكامبين — تتبعت أوتوماتيك في وقت لاحق</label>
+      <label class="toggle">
+        <input type="checkbox" id="scheduleEnabled" onchange="toggleScheduleBox()">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="schedule-box" id="scheduleBox">
+      <label>موعد الإرسال (بتوقيت جهازك)</label>
+      <input type="datetime-local" id="scheduledAt">
+      <div class="hint">الـ Job بيتحفظ على السيرفر ويبدأ لوحده في الموعد. الـ Preflight للتيمبلت والـ Mapping بيتعمل دلوقتي، ولو السيرفر كان واقف وقت الموعد لأكتر من ساعة الكامبين بتتعلم Missed ومش بتتبعت.</div>
+    </div>
     <button class="primary" id="sendApiBtn" onclick="sendApiCampaign()" style="width:100%;margin-top:.5rem">
       إرسال/اختبار Template عبر Chatwoot API
     </button>
@@ -666,7 +681,7 @@ let csvData = [], logEntries = [], done = 0, updated = 0, fail = 0;
 let syncedInboxes = [], syncedTemplates = [], syncedAgents = [], syncedTeams = [], agentAssignments = {};
 let syncedAgentsInboxId = '';
 let replyRoutingRules = [];
-let activeServerJobId = null, serverJobPollTimer = null, serverLogOffset = 0;
+let activeServerJobId = null, serverJobPollTimer = null, serverJobPollIntervalMs = 2000, serverLogOffset = 0;
 // يحتفظ بـ { row, convId, msgId } لكل رسالة أُرسلت بنجاح (sync) —
 // يُستخدم بواسطة checkDeliveryStatus() لاكتشاف الفشل الـ async من WhatsApp
 let sentMsgTrack = [];
@@ -830,6 +845,12 @@ async function startServerJob(type) {
     if (!validateAttrColumn(attrCol)) return;
   }
 
+  let scheduledAt = null;
+  if (type === 'send' && scheduleEnabled()) {
+    scheduledAt = readScheduledAt();
+    if (!scheduledAt) return;
+  }
+
   const endpoint = type === 'send' ? '/api/jobs/send' : '/api/jobs/upload';
   const btn = type === 'send' ? $('sendApiBtn') : $('runBtn');
   if (btn) btn.disabled = true;
@@ -837,17 +858,20 @@ async function startServerJob(type) {
   stat('sTotal', rows.length); stat('sDone', 0); stat('sUpdated', 0); stat('sFail', 0);
   $('progBar').style.width = '0%';
   $('jobProgBar').style.width = '0%';
-  setJobStatus(`Starting ${type} job on server...`);
-  log(`─── بدء ${type === 'send' ? 'الإرسال' : 'الرفع'} كـ Background Job على السيرفر ───`, 'inf');
+  setJobStatus(scheduledAt ? `Scheduling send job for ${formatScheduleTime(scheduledAt)}...` : `Starting ${type} job on server...`);
+  log(scheduledAt
+    ? `─── جدولة الإرسال على السيرفر — موعد التشغيل ${formatScheduleTime(scheduledAt)} ───`
+    : `─── بدء ${type === 'send' ? 'الإرسال' : 'الرفع'} كـ Background Job على السيرفر ───`, 'inf');
 
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, settings: collectServerJobSettings() })
+      body: JSON.stringify({ rows, settings: collectServerJobSettings(), ...(scheduledAt ? { scheduledAt } : {}) })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (scheduledAt) log(`تم جدولة الكامبين (${rows.length} رقم) — هتبدأ ${formatScheduleTime(scheduledAt)}`, 'ok');
     activeServerJobId = data.job.id;
     serverLogOffset = 0;
     try { localStorage.setItem('lastCampaignServerJobId', activeServerJobId); } catch (_) {}
@@ -864,8 +888,17 @@ async function startServerJob(type) {
 function beginServerJobPolling(jobId) {
   activeServerJobId = jobId;
   if (serverJobPollTimer) clearInterval(serverJobPollTimer);
+  serverJobPollIntervalMs = 2000;
   pollServerJob(jobId);
-  serverJobPollTimer = setInterval(() => pollServerJob(jobId), 2000);
+  serverJobPollTimer = setInterval(() => pollServerJob(jobId), serverJobPollIntervalMs);
+}
+
+// A scheduled job can wait for hours; poll slowly until it starts.
+function setServerJobPollInterval(jobId, intervalMs) {
+  if (!serverJobPollTimer || serverJobPollIntervalMs === intervalMs) return;
+  clearInterval(serverJobPollTimer);
+  serverJobPollIntervalMs = intervalMs;
+  serverJobPollTimer = setInterval(() => pollServerJob(jobId), intervalMs);
 }
 
 async function pollServerJob(jobId = activeServerJobId) {
@@ -920,7 +953,13 @@ function updateServerJobUI(job) {
   const pct = total ? Math.round(processed / total * 100) : 0;
   $('progBar').style.width = `${pct}%`;
   $('jobProgBar').style.width = `${pct}%`;
-  setJobStatus(`${job.type.toUpperCase()} • ${job.status} • ${processed}/${total} • sent/new: ${primary} • skipped/updated: ${secondary} • failed: ${failed}`);
+  if (job.status === 'scheduled') {
+    setJobStatus(`SEND • scheduled • يبدأ ${formatScheduleTime(job.scheduledAt)} • ${total} رقم`);
+    setServerJobPollInterval(job.id, 30000);
+    return;
+  }
+  setServerJobPollInterval(job.id, 2000);
+  setJobStatus(`${job.type.toUpperCase()} • ${job.status} • ${processed}/${total} • sent/new: ${primary} • skipped/updated: ${secondary} • failed: ${failed}${job.status === 'missed' ? ' • ' + (job.lastError || '') : ''}`);
   const hasFailed = failed > 0 || (job.failedRecords || []).length > 0;
   const failedBtn = $('serverFailedBtn');
   if (failedBtn) failedBtn.style.display = hasFailed ? 'block' : 'none';
@@ -928,7 +967,7 @@ function updateServerJobUI(job) {
     showCheckDeliveryBtn();
   }
 
-  if (['completed', 'completed_with_errors', 'failed', 'stopped', 'interrupted'].includes(job.status)) {
+  if (['completed', 'completed_with_errors', 'failed', 'stopped', 'interrupted', 'missed', 'cancelled'].includes(job.status)) {
     if (serverJobPollTimer) clearInterval(serverJobPollTimer);
     serverJobPollTimer = null;
     $('runBtn').disabled = false;
@@ -991,13 +1030,16 @@ function renderJobRow(job) {
   const title = `${job.type === 'send' ? 'Send' : 'Upload'} • ${job.settings?.labelName || '-'} • ${job.queueLabel || '-'}`;
   const remaining = Math.max(0, (job.total || 0) - (job.processed || 0));
   const staleQueued = job.status === 'queued' && job.active === false;
-  const canStartQueued = staleQueued && (job.processed || 0) === 0 && remaining > 0;
+  const isScheduleState = ['scheduled', 'missed', 'cancelled'].includes(job.status || '');
+  const canStartQueued = (staleQueued || isScheduleState) && (job.processed || 0) === 0 && remaining > 0;
   const canRequeue = ['interrupted', 'stopped', 'failed'].includes(job.status || '') && remaining > 0;
-  const canStop = ['queued', 'running'].includes(job.status || '');
+  const canStop = ['queued', 'running', 'scheduled'].includes(job.status || '');
+  const startLabel = isScheduleState ? 'تشغيل الآن' : 'تشغيل';
   const meta = [
     job.operatorName ? `by ${job.operatorName}` : 'بدون اسم مشغّل',
     `${job.processed || 0}/${job.total || 0}`,
     job.status === 'queued' ? (job.active ? 'live queue' : 'stale queue') : '',
+    job.scheduledAt ? `⏰ ${formatScheduleTime(job.scheduledAt)}` : '',
     `done ${done}`,
     remaining ? `remaining ${remaining}` : '',
     failed ? `failed ${failed}` : '',
@@ -1010,19 +1052,22 @@ function renderJobRow(job) {
         <div class="job-row-meta">${escapeHtml(meta)}</div>
       </div>
       <span class="job-pill ${escapeHtml(job.status || '')}">${escapeHtml(job.status || 'unknown')}</span>
-      ${canStartQueued ? `<button class="secondary" type="button" onclick="startQueuedJob('${escapeHtml(job.id)}')">تشغيل</button>` : (canRequeue ? `<button class="secondary" type="button" onclick="requeueRemainingJob('${escapeHtml(job.id)}')">استكمال المتبقي</button>` : '<span></span>')}
+      ${canStartQueued ? `<button class="secondary" type="button" onclick="startQueuedJob('${escapeHtml(job.id)}', ${isScheduleState})">${startLabel}</button>` : (canRequeue ? `<button class="secondary" type="button" onclick="requeueRemainingJob('${escapeHtml(job.id)}')">استكمال المتبقي</button>` : '<span></span>')}
       ${canStop ? `<button class="secondary" type="button" onclick="stopJobById('${escapeHtml(job.id)}')">إلغاء</button>` : '<span></span>'}
       <button class="secondary" type="button" onclick="followServerJob('${escapeHtml(job.id)}')">متابعة</button>
     </div>`;
 }
 
-async function startQueuedJob(jobId) {
+async function startQueuedJob(jobId, scheduledJob = false) {
   if (!jobId) return;
+  if (scheduledJob && !confirm('الكامبين هتتبعت للعملاء دلوقتي بدل الموعد المحدد. متأكد؟')) return;
   try {
+    // A scheduled job runs with the settings saved when it was scheduled; the
+    // form may now hold a different campaign.
     const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ settings: collectServerJobSettings() })
+      body: JSON.stringify(scheduledJob ? {} : { settings: collectServerJobSettings() })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -1071,6 +1116,46 @@ function followServerJob(jobId) {
   serverLogOffset = 0;
   try { localStorage.setItem('lastCampaignServerJobId', jobId); } catch (_) {}
   beginServerJobPolling(jobId);
+}
+
+function formatScheduleTime(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString('ar-EG', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function toLocalInputValue(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function scheduleEnabled() {
+  return Boolean($('scheduleEnabled')?.checked);
+}
+
+function toggleScheduleBox() {
+  const on = scheduleEnabled();
+  $('scheduleBox')?.classList.toggle('show', on);
+  const input = $('scheduledAt');
+  if (input) {
+    input.min = toLocalInputValue(new Date(Date.now() + 2 * 60000));
+    if (on && !input.value) {
+      const d = new Date(Date.now() + 60 * 60000);
+      d.setSeconds(0, 0);
+      input.value = toLocalInputValue(d);
+    }
+  }
+  const btn = $('sendApiBtn');
+  if (btn) btn.textContent = on ? '⏰ جدولة الكامبين على السيرفر' : 'إرسال/اختبار Template عبر Chatwoot API';
+}
+
+// datetime-local is the browser's wall-clock time; send an absolute UTC
+// instant so the server's timezone never changes when customers are messaged.
+function readScheduledAt() {
+  const raw = $('scheduledAt')?.value || '';
+  const d = raw ? new Date(raw) : null;
+  if (!d || Number.isNaN(d.getTime())) { log('اختار موعد الإرسال', 'err'); return null; }
+  if (d.getTime() < Date.now() + 60000) { log('موعد الجدولة لازم يكون بعد دقيقة على الأقل من دلوقتي', 'err'); return null; }
+  return d.toISOString();
 }
 
 function formatJobTime(value) {
@@ -3369,6 +3454,10 @@ runUpload = async function() {
 
 const sendApiCampaignBrowser = sendApiCampaign;
 sendApiCampaign = async function() {
+  if (scheduleEnabled() && $('dryRun')?.checked) {
+    log('الجدولة للإرسال الحقيقي بس — اقفل Dry Run وفعّل تأكيد الإرسال', 'err');
+    return;
+  }
   if (!$('dryRun')?.checked) return startServerJob('send');
   return sendApiCampaignBrowser();
 };
