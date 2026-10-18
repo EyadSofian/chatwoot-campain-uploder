@@ -25,6 +25,8 @@ import {
   getScheduledJobMaxLateMs,
   parseScheduledAt,
 } from './scheduledJobs.js';
+import { CMRP_WORKFLOW_ID, isCmrpWebinarOptedIn } from './cmrpWebinar.js';
+import { findApprovedMetaTemplate } from './metaTemplate.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -533,6 +535,13 @@ async function runSendJob(job, runtime) {
     if (runtime.stopRequested || job.stopRequested) break;
     const row = rows[i];
     const name = row.name || row.phone_number || `row ${i + 1}`;
+    if (settings.optInWorkflowId === CMRP_WORKFLOW_ID && !await isCmrpWebinarOptedIn(row.phone_number)) {
+      job.processed++;
+      job.counters.skipped++;
+      job.updatedAt = new Date().toISOString();
+      await writeJob(job);
+      continue;
+    }
     await logJob(job, `Sending ${i + 1}/${rows.length}: ${name}`, 'info');
     try {
       const result = await sendTemplateForRowWithRetry(job, runtime, row, campaignKey);
@@ -565,6 +574,9 @@ async function preflightSendJob(job, runtime) {
   if (!settings.labelName) throw new Error('Label name is required');
   if (!settings.inboxId) throw new Error('WhatsApp inbox is required');
   if (!settings.templateName) throw new Error('Template name is required');
+  if (settings.optInWorkflowId && settings.optInWorkflowId !== CMRP_WORKFLOW_ID) {
+    throw new Error(`Unknown opt-in workflow: ${settings.optInWorkflowId}`);
+  }
   const templateDefinition = await loadTemplateDefinition(job, runtime);
   assertTemplateMappings(rows, settings, templateDefinition.bodyVariables);
   assertReplyAssignmentSettings(settings);
@@ -665,6 +677,7 @@ function normalizeSettings(settings) {
     assignmentMap: settings.assignmentMap && typeof settings.assignmentMap === 'object' ? settings.assignmentMap : {},
     replyRoutingRules: normalizeReplyRoutingRules(settings.replyRoutingRules),
     operatorName: String(settings.operatorName || '').trim().slice(0, 80),
+    optInWorkflowId: String(settings.optInWorkflowId || '').trim(),
   };
 }
 
@@ -1515,6 +1528,9 @@ async function loadTemplateDefinition(job, runtime) {
 
   const definition = findApprovedTemplateDefinition(r.data, settings.templateName, settings.templateLang);
   if (definition) return definition;
+
+  const metaDefinition = await findApprovedMetaTemplate(r.data, settings.templateName, settings.templateLang);
+  if (metaDefinition) return metaDefinition;
 
   const available = listApprovedTemplateNames(r.data);
   const suffix = available.length

@@ -157,6 +157,14 @@ If `WEBHOOK_SECRET` is set:
 URL: https://YOUR-APP-DOMAIN/api/webhooks/chatwoot?token=YOUR_SECRET
 ```
 
+## CMRP webinar, 20 October 2026
+
+The CMRP invite uses the approved `cmrp_webinar_invite_20261020` template in account 2, WhatsApp inbox 25. Its label must be `cmrp_webinar_2026_10_20_invite`. The `message_created` webhook already connected to this app recognizes `نعم` and `لا` only on invited conversations in that inbox. A first `نعم` sends the Zoom link and passcode as a normal reply and records opt-in on the persistent `JOBS_DIR` volume. `لا` records opt-out. Duplicate replies do not repeat the link.
+
+For both reminders, turn on **CMRP 20 أكتوبر — ابعت التذكير فقط للي ردوا «نعم»** before scheduling. This sets `optInWorkflowId=cmrp_2026_10_20`, which checks opt-in at the time each row is processed. It skips contacts who have not confirmed, without creating a conversation or sending a message. Schedule the approved `cmrp_webinar_day_reminder_20261020` for 19 October 2026 at 19:00 Africa/Cairo and `cmrp_webinar_two_hour_reminder_20261020` for 20 October 2026 at 17:00 Africa/Cairo. Keep the checkbox off for the initial invite.
+
+For first-reply assignment, use the CSV `cmrp_agent` custom attribute and three `on_reply_rules` mapping `rana`, `mohamed`, and `shimaa` to the three selected Agents. All three must first be members of inbox 25. Leave automatic assignment off for reminder jobs so the first-reply route and any completed assignment stay intact.
+
 ## Safe Sending Flow
 
 1. Open the app.

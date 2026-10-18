@@ -167,6 +167,26 @@ test('a due scheduled job is handed to the send queue', async (t) => {
   assert.match(log, /Scheduled time reached/);
 });
 
+test('CMRP reminder skips a contact without a yes reply before any Chatwoot write', async (t) => {
+  const requests = stubChatwoot(t);
+  const body = sendBody(inMinutes(5));
+  body.settings.optInWorkflowId = 'cmrp_2026_10_20';
+  const created = await call('POST', '/api/jobs/send', body);
+  assert.equal(created.statusCode, 202);
+  const { job } = created.body;
+
+  await runSchedulerTick(Date.now() + 6 * MINUTE);
+  let settled;
+  for (let i = 0; i < 100 && !settled; i++) {
+    const current = (await call('GET', `/api/jobs/${job.id}`)).body.job;
+    if (current && !['scheduled', 'queued', 'running'].includes(current.status)) settled = current;
+    else await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(settled);
+  assert.equal(settled.counters.skipped, 1);
+  assert.ok(requests.every((request) => request.startsWith('GET ')), `no write expected: ${requests}`);
+});
+
 test('a job whose time passed while the server was down is marked missed, not sent', async (t) => {
   stubChatwoot(t);
   const { job } = (await call('POST', '/api/jobs/send', sendBody(inMinutes(5)))).body;

@@ -555,6 +555,13 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
         <span class="slider"></span>
       </label>
     </div>
+    <div class="toggle-row">
+      <label>CMRP 20 أكتوبر — ابعت التذكير فقط للي ردوا «نعم» على الدعوة</label>
+      <label class="toggle">
+        <input type="checkbox" id="cmrpOptInOnly">
+        <span class="slider"></span>
+      </label>
+    </div>
     <div class="schedule-box" id="scheduleBox">
       <label>موعد الإرسال (بتوقيت جهازك)</label>
       <input type="datetime-local" id="scheduledAt">
@@ -826,7 +833,8 @@ function collectServerJobSettings() {
     fixedTargetId: $('fixedAgentSelect')?.value || '',
     fixedTargetName: selectedFixedTargetName(),
     assignmentMap: { ...agentAssignments },
-    replyRoutingRules: serializeReplyRoutingRules()
+    replyRoutingRules: serializeReplyRoutingRules(),
+    optInWorkflowId: $('cmrpOptInOnly')?.checked ? 'cmrp_2026_10_20' : ''
   };
 }
 
