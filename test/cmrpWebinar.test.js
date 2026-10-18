@@ -19,6 +19,9 @@ test('invited reply receives join details once and controls reminder eligibility
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, method: options.method, body: options.body && JSON.parse(options.body) });
+    if (url.endsWith('/messages') && options.method === 'GET') return {
+      ok: true, json: async () => ({ payload: [] }),
+    };
     if (options.method === 'GET') return {
       ok: true,
       json: async () => ({ id: 123, inbox_id: 25,
@@ -39,6 +42,28 @@ test('invited reply receives join details once and controls reminder eligibility
   assert.equal(calls.filter((call) => call.method === 'POST').length, 1);
   assert.equal((await handleCmrpWebinarReply({ ...payload, content: 'لا' }, { now, fetchImpl })).status, 'declined');
   assert.equal(await isCmrpWebinarOptedIn('966500000001'), false);
+});
+
+test('a delivered join message prevents another send when local state is missing', async () => {
+  let writes = 0;
+  const fetchImpl = async (url, options) => {
+    if (options.method === 'POST') { writes++; return { ok: true, json: async () => ({ id: 456 }) }; }
+    if (url.endsWith('/messages')) return { ok: true, json: async () => ({ payload: [{
+      message_type: 1, status: 'delivered',
+      content: 'شكراً لتأكيد اهتمامك بويبينار CMRP المجاني من Engosoft. موعدنا الثلاثاء 20 أكتوبر الساعة 7:00 مساءً بتوقيت القاهرة مع م. أحمد النمر. رابط الدخول: https://engosoft.zoom.us/j/84015784342 الرقم السري: 123',
+    }] }) };
+    return { ok: true, json: async () => ({
+      id: 125, inbox_id: 25, labels: ['cmrp_webinar_2026_10_20_invite'],
+      meta: { sender: { phone_number: '+966500000002' } },
+    }) };
+  };
+  const result = await handleCmrpWebinarReply({
+    event: 'message_created', message_type: 'incoming', content: 'نعم',
+    account: { id: 2 }, conversation: { id: 125, inbox_id: 25 },
+  }, { now: Date.parse('2026-10-18T18:00:00+03:00'), fetchImpl });
+  assert.equal(result.status, 'confirmed');
+  assert.equal(writes, 0);
+  assert.equal(await isCmrpWebinarOptedIn('966500000002'), true);
 });
 
 test('does not process a reply outside the campaign inbox', async () => {

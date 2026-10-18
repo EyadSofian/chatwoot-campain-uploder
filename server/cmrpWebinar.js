@@ -79,12 +79,20 @@ export async function handleCmrpWebinarReply(payload, { now = Date.now(), fetchI
     const previous = await readState(phone);
     if (previous?.answer === answer) return { status: 'skipped', reason: 'same_answer' };
     if (answer === 'yes') {
-      await request(`/conversations/${conversationId}/messages`, 'POST', {
-        content: JOIN_MESSAGE,
-        message_type: 'outgoing',
-        private: false,
-        content_type: 'text',
-      });
+      const history = await request(`/conversations/${conversationId}/messages`);
+      const alreadySent = (Array.isArray(history) ? history : []).some((message) => (
+        ['outgoing', 1].includes(message?.message_type) &&
+        message?.content === JOIN_MESSAGE &&
+        message?.status !== 'failed'
+      ));
+      if (!alreadySent) {
+        await request(`/conversations/${conversationId}/messages`, 'POST', {
+          content: JOIN_MESSAGE,
+          message_type: 'outgoing',
+          private: false,
+          content_type: 'text',
+        });
+      }
     }
     await writeState(phone, {
       answer,
