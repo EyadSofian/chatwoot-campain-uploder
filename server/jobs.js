@@ -26,6 +26,7 @@ import {
   parseScheduledAt,
 } from './scheduledJobs.js';
 import { CMRP_WORKFLOW_ID, isCmrpWebinarOptedIn } from './cmrpWebinar.js';
+import { findApprovedMetaTemplate } from './metaTemplate.js';
 
 const DATA_DIR = process.env.JOBS_DIR || path.join(process.cwd(), 'data');
 const JOBS_DIR = path.join(DATA_DIR, 'jobs');
@@ -1527,6 +1528,9 @@ async function loadTemplateDefinition(job, runtime) {
 
   const definition = findApprovedTemplateDefinition(r.data, settings.templateName, settings.templateLang);
   if (definition) return definition;
+
+  const metaDefinition = await findApprovedMetaTemplate(r.data, settings.templateName, settings.templateLang);
+  if (metaDefinition) return metaDefinition;
 
   const available = listApprovedTemplateNames(r.data);
   const suffix = available.length
