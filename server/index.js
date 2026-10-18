@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { registerJobRoutes } from './jobs.js';
 import { registerReplyRouter } from './replyRouter.js';
+import { startCmrpReplyReconciler } from './cmrpReconcile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -26,6 +27,7 @@ registerJobRoutes(app);
 
 app.use('/api/webhooks', express.json({ limit: '2mb' }));
 registerReplyRouter(app);
+startCmrpReplyReconciler();
 
 app.use('/api/chatwoot', express.json({ limit: '1mb' }));
 
