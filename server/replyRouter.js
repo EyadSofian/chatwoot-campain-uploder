@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'crypto';
 import { withConversationLock } from './conversationLocks.js';
 import { updateCampaignAttributesLocked } from './campaignAttributeWriter.js';
+import { handleCmrpWebinarReply } from './cmrpWebinar.js';
 
 export function registerReplyRouter(app) {
   app.post('/api/webhooks/chatwoot', async (req, res) => {
@@ -13,8 +14,9 @@ export function registerReplyRouter(app) {
         }
       }
 
+      const webinar = await handleCmrpWebinarReply(req.body || {});
       const result = await handleChatwootWebhook(req.body || {});
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, webinar, ...result });
     } catch (err) {
       console.error('[reply-router]', err.message);
       res.status(err.status || 500).json({ ok: false, error: err.message });
