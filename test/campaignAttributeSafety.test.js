@@ -11,7 +11,7 @@ import { MAX_ATTRIBUTE_WRITE_ATTEMPTS } from '../server/campaignAttributeWriter.
 const jobsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'uploader-jobs-'));
 await fs.mkdir(path.join(jobsDir, 'jobs'), { recursive: true });
 process.env.JOBS_DIR = jobsDir;
-const { sendTemplateForRow } = await import('../server/jobs.js');
+const { sendTemplateForRow, selectFailedSendRows } = await import('../server/jobs.js');
 const { handleChatwootWebhook } = await import('../server/replyRouter.js');
 
 const CAMPAIGN_KEY = 'api_sent_sept_campaign_confirm_step';
@@ -339,4 +339,112 @@ test('a transient write failure starts over from a fresh read instead of resendi
   assert.equal(final.odoo_lead_id, '777');
   assert.equal(final.attribution_channel, 'whatsapp');
   assert.equal(final.api_campaign_status, 'sent');
+});
+
+test('send uses the contact already linked to the WhatsApp inbox when phone search finds a duplicate first', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  const duplicate = chatwoot.addContact({ phone: '+972598163043', name: 'Duplicate' });
+  const linked = chatwoot.addContact({ phone: '+972598163043', name: 'Linked', inboxSourceIds: { 27: '972598163043' } });
+  const result = await sendTemplateForRow(
+    newJob(), runtimeFor({ inboxId: '27' }),
+    { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY
+  );
+
+  assert.equal(result.status, 'sent');
+  assert.equal(chatwoot.conversations.get(String(result.convId)).contact_id, linked.id);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path === `/contacts/${duplicate.id}/contact_inboxes`), false);
+});
+
+test('send resolves the linked contact by source ID when phone search only returns the wrong duplicate', async (t) => {
+  const chatwoot = createFakeChatwoot({ searchResultLimit: 1 });
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  const duplicate = chatwoot.addContact({ phone: '+972598163043', name: 'Duplicate' });
+  const linked = chatwoot.addContact({ phone: '+972598163043', name: 'Linked', inboxSourceIds: { 27: '972598163043' } });
+  const result = await sendTemplateForRow(
+    newJob(), runtimeFor({ inboxId: '27' }),
+    { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY
+  );
+
+  assert.equal(result.status, 'sent');
+  assert.equal(chatwoot.conversations.get(String(result.convId)).contact_id, linked.id);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'GET' && r.path === '/contact_inboxes/filter'), true);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path === `/contacts/${duplicate.id}/contact_inboxes`), false);
+});
+
+test('send stops before writing when a WhatsApp source ID belongs to a contact with another phone', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  chatwoot.addContact({ phone: '+972598163043', name: 'Requested' });
+  chatwoot.addContact({ phone: '+972599999999', name: 'Other', inboxSourceIds: { 27: '972598163043' } });
+  await assert.rejects(
+    sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
+    /belongs to a contact with a different phone/
+  );
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST'), false);
+});
+
+test('send stops when a matched contact uses another WhatsApp source ID in the same inbox', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  chatwoot.addContact({ phone: '+972598163043', inboxSourceIds: { 27: '972599999999' } });
+  await assert.rejects(
+    sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
+    /linked to Inbox #27 with a different WhatsApp source_id/
+  );
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST'), false);
+});
+
+test('send creates a WhatsApp inbox link for a contact whose source ID is not used elsewhere', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  const contact = chatwoot.addContact({ phone: '+972598163043', name: 'New to inbox' });
+  const result = await sendTemplateForRow(
+    newJob(), runtimeFor({ inboxId: '27' }),
+    { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY
+  );
+
+  assert.equal(result.status, 'sent');
+  assert.equal(chatwoot.conversations.get(String(result.convId)).contact_id, contact.id);
+  assert.deepEqual(chatwoot.requests.find((r) => r.method === 'POST' && r.path === `/contacts/${contact.id}/contact_inboxes`).body, {
+    inbox_id: 27,
+    source_id: '972598163043',
+  });
+});
+
+test('failed send retry selects the original row with its template parameters and excludes delivery failures', () => {
+  const rows = [
+    { name: 'A', phone_number: '+972598163043', code: 'first' },
+    { name: 'B', phone_number: '+972598163044', code: 'second' },
+  ];
+  const job = { failedRecords: [
+    { phone: '97259-816-3043', name: 'A', raw_error: 'contact_inbox create failed: HTTP 422' },
+    { phone: '+972598163044', name: 'B', raw_error: 'async delivery failed msg=9' },
+  ] };
+  assert.deepEqual(selectFailedSendRows(job, rows), [rows[0]]);
+});
+
+test('failed send retry refuses an ambiguous legacy row and uses the recorded index for new jobs', () => {
+  const rows = [
+    { name: 'A', phone_number: '+972598163043', code: 'first' },
+    { name: 'A', phone_number: '+972598163043', code: 'second' },
+  ];
+  const failure = { phone: '+972598163043', name: 'A', raw_error: 'HTTP 422' };
+  assert.throws(() => selectFailedSendRows({ failedRecords: [failure] }, rows), /Cannot safely identify failed row/);
+  assert.deepEqual(selectFailedSendRows({ failedRecords: [{ ...failure, kind: 'send', rowIndex: 1 }] }, rows), [rows[1]]);
 });
