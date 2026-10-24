@@ -2,7 +2,7 @@
 // safety: POST /conversations/:id/custom_attributes REPLACES the whole hash.
 // Other integrations are simulated by hooks that edit state directly, so the
 // request log only contains the uploader's own calls.
-export function createFakeChatwoot({ accountId = '2' } = {}) {
+export function createFakeChatwoot({ accountId = '2', searchResultLimit = Infinity } = {}) {
   const conversations = new Map();
   const contacts = new Map();
   const requests = [];
@@ -98,8 +98,30 @@ export function createFakeChatwoot({ accountId = '2' } = {}) {
     }
     if (method === 'GET' && path === '/contacts/search') {
       const q = String(parsed.searchParams.get('q') || '').replace(/\D/g, '');
-      const payload = [...contacts.values()].filter((c) => String(c.phone_number).replace(/\D/g, '') === q);
+      const payload = [...contacts.values()]
+        .filter((c) => String(c.phone_number).replace(/\D/g, '') === q)
+        .slice(0, searchResultLimit);
       return { body: { payload: clone(payload) } };
+    }
+    if (method === 'GET' && path === '/contact_inboxes/filter') {
+      const inboxId = parsed.searchParams.get('inbox_id');
+      const sourceId = parsed.searchParams.get('source_id');
+      const contact = [...contacts.values()].find((c) => c.contact_inboxes.some((ci) => (
+        String(ci.inbox.id) === inboxId && String(ci.source_id) === sourceId
+      )));
+      return contact ? { body: clone(contact) } : { status: 404, body: {} };
+    }
+    if ((m = path.match(/^\/contacts\/(\d+)\/contact_inboxes$/)) && method === 'POST') {
+      const contact = contacts.get(m[1]);
+      if (!contact) return { status: 404, body: {} };
+      const collision = [...contacts.values()].some((c) => c.id !== contact.id && c.contact_inboxes.some((ci) => (
+        String(ci.inbox.id) === String(body.inbox_id) && String(ci.source_id) === String(body.source_id)
+      )));
+      if (collision) {
+        return { status: 422, body: { message: 'Source invalid source id for whatsapp inbox' } };
+      }
+      contact.contact_inboxes.push({ inbox: { id: body.inbox_id }, source_id: body.source_id });
+      return { body: clone(contact.contact_inboxes.at(-1)) };
     }
     if ((m = path.match(/^\/contacts\/(\d+)\/labels$/))) {
       const contact = contacts.get(m[1]);

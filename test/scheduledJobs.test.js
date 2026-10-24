@@ -205,6 +205,40 @@ test('scheduled jobs cannot be requeued into an immediate duplicate', async (t) 
   await call('POST', `/api/jobs/${job.id}/stop`);
 });
 
+test('failed send rows can be requeued from saved input once, including an older job', async (t) => {
+  stubChatwoot(t);
+  const id = `legacy-failed-${Date.now()}`;
+  const rows = [
+    { name: 'Failed', phone_number: '+972598163043', template_value: 'original value' },
+    { name: 'Sent', phone_number: '+972598163044', template_value: 'another value' },
+  ];
+  await fs.writeFile(path.join(jobsDir, 'jobs', `${id}.json`), JSON.stringify({
+    id, type: 'send', status: 'completed_with_errors', processed: 2,
+    counters: { sent: 1, errors: 1 },
+    failedRecords: [{ phone: '97259-816-3043', name: 'Failed', raw_error: 'contact_inbox create failed: HTTP 422' }],
+  }));
+  await fs.writeFile(path.join(jobsDir, 'jobs', `${id}-input.json`), JSON.stringify({
+    type: 'send', rows, settings: sendBody().settings,
+  }));
+
+  const result = await call('POST', `/api/jobs/${id}/requeue-failed-rows`);
+  assert.equal(result.statusCode, 202);
+  assert.equal(result.body.count, 1);
+  const retriedInput = JSON.parse(await fs.readFile(path.join(jobsDir, 'jobs', `${result.body.job.id}-input.json`), 'utf8'));
+  assert.deepEqual(retriedInput.rows, [rows[0]]);
+  assert.equal(retriedInput.settings.templateName, 'promo');
+
+  const repeat = await call('POST', `/api/jobs/${id}/requeue-failed-rows`);
+  assert.equal(repeat.statusCode, 409);
+  assert.match(repeat.body.error, /already requeued/);
+
+  for (let i = 0; i < 100; i++) {
+    const current = (await call('GET', `/api/jobs/${result.body.job.id}`)).body.job;
+    if (!['queued', 'running'].includes(current.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+});
+
 test('a schedule with a broken template is rejected up front and leaves no job behind', async (t) => {
   stubChatwoot(t, { templates: [] });
   const before = await fs.readdir(path.join(jobsDir, 'jobs'));

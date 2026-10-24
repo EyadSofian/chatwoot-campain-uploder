@@ -647,6 +647,9 @@ button.secondary:hover{border-color:var(--line-strong);color:var(--text)}
     <button class="secondary" id="retryFailedBtn" onclick="retryFailedMessages()" style="display:none">
       🔄 إعادة إرسال الفاشلة
     </button>
+    <button class="secondary" id="requeueFailedRowsBtn" onclick="requeueFailedSendRows()" style="display:none">
+      🔄 إعادة محاولة الأرقام التي فشل إرسالها
+    </button>
   </div>
   <div id="failedNote" class="hint" style="display:none;margin-top:6px;color:#d97706">
     ⚠️ أرقام الخطأ الدائم لا تُعاد إرسالها — تضر بتقييم الرقم في WhatsApp Manager
@@ -971,6 +974,20 @@ function updateServerJobUI(job) {
   const hasFailed = failed > 0 || (job.failedRecords || []).length > 0;
   const failedBtn = $('serverFailedBtn');
   if (failedBtn) failedBtn.style.display = hasFailed ? 'block' : 'none';
+  const requeueBtn = $('requeueFailedRowsBtn');
+  if (requeueBtn) {
+    const retryableRows = (job.failedRecords || []).filter((record) => (
+      (!record.kind || record.kind === 'send')
+      && !/^(?:async delivery failed|retry failed)\b/i.test(String(record.raw_error || ''))
+      && !isPermanentWhatsAppError(Number(record.error_code))
+    ));
+    const canRequeueFailed = job.type === 'send'
+      && retryableRows.length > 0
+      && !job.failedRequeueJobId
+      && ['completed', 'completed_with_errors', 'failed'].includes(job.status);
+    requeueBtn.style.display = canRequeueFailed ? '' : 'none';
+    requeueBtn.textContent = `🔄 إعادة محاولة الأرقام التي فشل إرسالها (${retryableRows.length})`;
+  }
   if (job.type === 'send' && ['completed', 'completed_with_errors'].includes(job.status) && (job.sentTrack || []).length) {
     showCheckDeliveryBtn();
   }
@@ -1102,6 +1119,24 @@ async function requeueRemainingJob(jobId) {
     refreshJobsList();
   } catch (err) {
     log(`Requeue remaining failed: ${err.message}`, 'err');
+  }
+}
+
+async function requeueFailedSendRows() {
+  if (!activeServerJobId) return;
+  const btn = $('requeueFailedRowsBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(activeServerJobId)}/requeue-failed-rows`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    log(`بدأت مهمة جديدة لإعادة محاولة ${data.count || 0} رقم فشل إرساله`, 'ok');
+    if (data.job?.id) followServerJob(data.job.id);
+    refreshJobsList();
+  } catch (err) {
+    log(`فشلت إعادة محاولة الأرقام: ${err.message}`, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

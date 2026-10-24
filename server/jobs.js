@@ -218,6 +218,33 @@ export function registerJobRoutes(app) {
     }
   });
 
+  app.post('/api/jobs/:id/requeue-failed-rows', async (req, res) => {
+    try {
+      const job = await readJob(req.params.id);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (job.type !== 'send') return res.status(400).json({ error: 'Only send jobs can requeue failed rows' });
+      if (isActiveJob(job)) return res.status(409).json({ error: 'Wait until this job finishes before retrying its failed rows' });
+      if (job.failedRequeueJobId) {
+        return res.status(409).json({ error: `Failed rows were already requeued in job ${job.failedRequeueJobId}` });
+      }
+      const input = await readJobInput(job.id);
+      if (!input?.rows?.length) {
+        return res.status(409).json({ error: 'Saved campaign rows are missing. Download the failed CSV and start a new send job.' });
+      }
+      const rows = selectFailedSendRows(job, input.rows);
+      if (!rows.length) return res.status(409).json({ error: 'No failed send rows to retry. Delivery failures use the message retry button.' });
+
+      const created = await createJob('send', { rows, settings: input.settings || {} });
+      job.failedRequeueJobId = created.publicJob.id;
+      job.updatedAt = new Date().toISOString();
+      await writeJob(job);
+      await logJob(job, `${rows.length} failed send rows requeued in job ${created.publicJob.id}`, 'info');
+      res.status(202).json({ job: created.publicJob, count: rows.length });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/jobs/:id/check-delivery', async (req, res) => {
     try {
       const job = await readJob(req.params.id);
@@ -544,7 +571,7 @@ async function runSendJob(job, runtime) {
     }
     await logJob(job, `Sending ${i + 1}/${rows.length}: ${name}`, 'info');
     try {
-      const result = await sendTemplateForRowWithRetry(job, runtime, row, campaignKey);
+      const result = await sendTemplateForRowWithRetry(job, runtime, row, campaignKey, i);
       job.processed++;
       if (result.status === 'sent') {
         job.counters.sent++;
@@ -558,7 +585,7 @@ async function runSendJob(job, runtime) {
       const code = extractWhatsAppErrorCode(err.message);
       job.processed++;
       job.counters.errors++;
-      recordFailure(job, row, code, err.message, false);
+      recordFailure(job, row, code, err.message, false, { kind: 'send', rowIndex: i });
       await logJob(job, `${name} failed: ${err.message}`, 'error');
     }
     job.updatedAt = new Date().toISOString();
@@ -789,7 +816,7 @@ async function processContact(job, runtime, row) {
   return { status: result.isNew ? 'new' : 'updated', id: result.id };
 }
 
-async function upsertContact(job, runtime, row, attrKey) {
+async function upsertContact(job, runtime, row, attrKey, { resolveInboxSource = false } = {}) {
   const { config, settings } = runtime;
   if (hasUnsafePhoneFormat(row.phone_number)) throw new Error(`Unsafe phone format: ${row.phone_number}`);
   const phone = normalizePhoneForChatwoot(row.phone_number);
@@ -797,7 +824,11 @@ async function upsertContact(job, runtime, row, attrKey) {
   const name = row.name || phone;
   const attrVal = attrKey ? row[attrKey] : null;
   const hasAttr = Boolean(attrKey && attrVal);
-  const contact = await findContactByPhone(job, config, phone);
+  const sourceId = resolveInboxSource ? validatedSourceId(row, settings) : '';
+  let contact = await findContactByPhone(job, config, phone, settings.inboxId, sourceId);
+  if (resolveInboxSource) {
+    contact = await resolveContactForInbox(job, config, contact, phone, settings.inboxId, sourceId);
+  }
 
   if (contact) {
     if (hasAttr) {
@@ -821,10 +852,18 @@ async function upsertContact(job, runtime, row, attrKey) {
   if (r.status === 422) {
     const existingId = extractId(r.data);
     if (existingId) {
-      if (hasAttr) await applyCustomAttr(job, config, existingId, attrKey, attrVal, name);
-      return { id: existingId, isNew: false, existingLabels: [] };
+      let existing = await getContactDetails(job, config, existingId);
+      if (resolveInboxSource) {
+        existing = await resolveContactForInbox(job, config, existing, phone, settings.inboxId, sourceId);
+      }
+      const chosenId = existing?.id || existingId;
+      if (hasAttr) await applyCustomAttr(job, config, chosenId, attrKey, attrVal, name, existing?.custom_attributes);
+      return { id: chosenId, isNew: false, existingLabels: existing?.labels || [] };
     }
-    const fallback = await findContactByPhone(job, config, phone);
+    let fallback = await findContactByPhone(job, config, phone, settings.inboxId, sourceId);
+    if (resolveInboxSource) {
+      fallback = await resolveContactForInbox(job, config, fallback, phone, settings.inboxId, sourceId);
+    }
     if (fallback) {
       if (hasAttr) await applyCustomAttr(job, config, fallback.id, attrKey, attrVal, name, fallback.custom_attributes);
       return { id: fallback.id, isNew: false, existingLabels: fallback.labels || [] };
@@ -834,22 +873,49 @@ async function upsertContact(job, runtime, row, attrKey) {
   throw new Error(`Failed to create contact ${name}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
 }
 
-async function findContactByPhone(job, config, phone) {
+async function findContactByPhone(job, config, phone, inboxId = '', sourceId = '') {
   const norm = normPhone(phone);
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/contacts/search?q=${encodeURIComponent(norm)}&page=1`, 'GET');
   if (r.ok) {
     const contacts = r.data.payload || [];
-    const match = contacts.find((contact) => normPhone(contact.phone_number) === norm);
+    const matches = contacts.filter((contact) => normPhone(contact.phone_number) === norm);
+    const match = matches.find((item) => getInboxSourceId(item, inboxId, sourceId)) || matches[0];
     if (match) return match;
   }
   if (phone && phone !== norm) {
     const r2 = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/contacts/search?q=${encodeURIComponent(phone)}&page=1`, 'GET');
     if (r2.ok) {
       const contacts = r2.data.payload || [];
-      return contacts.find((contact) => normPhone(contact.phone_number) === norm) || null;
+      const matches = contacts.filter((contact) => normPhone(contact.phone_number) === norm);
+      return matches.find((item) => getInboxSourceId(item, inboxId, sourceId)) || matches[0] || null;
     }
   }
   return null;
+}
+
+async function resolveContactForInbox(job, config, contact, phone, inboxId, sourceId) {
+  if (getInboxSourceId(contact, inboxId, sourceId)) return contact;
+
+  const pathName = `/api/v1/accounts/${config.accountId}/contact_inboxes/filter?inbox_id=${encodeURIComponent(inboxId)}&source_id=${encodeURIComponent(sourceId)}`;
+  const r = await cwFetch(job, config, pathName, 'GET');
+  if (r.ok) {
+    const linked = r.data?.payload || r.data;
+    if (!linked?.id || normPhone(linked.phone_number) !== normPhone(phone)) {
+      throw new Error(`WhatsApp source_id ${sourceId} on Inbox #${inboxId} belongs to a contact with a different phone. Review the contact in Chatwoot before sending.`);
+    }
+    if (contact && String(contact.id) !== String(linked.id)) {
+      await logJob(job, `Using contact #${linked.id} already linked to Inbox #${inboxId} instead of duplicate contact #${contact.id}`, 'warn');
+    }
+    return linked;
+  }
+  if (r.status !== 404) {
+    throw new Error(`Could not verify WhatsApp source_id ${sourceId} on Inbox #${inboxId}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  }
+  const otherSourceId = getInboxSourceId(contact, inboxId);
+  if (otherSourceId) {
+    throw new Error(`Contact #${contact.id} is linked to Inbox #${inboxId} with a different WhatsApp source_id. Review the contact in Chatwoot before sending.`);
+  }
+  return contact;
 }
 
 async function applyCustomAttr(job, config, contactId, attrKey, attrVal, name, existing = null) {
@@ -872,18 +938,18 @@ async function assignLabel(job, config, contactId, label, name, isNew = false, e
   return true;
 }
 
-async function sendTemplateForRowWithRetry(job, runtime, row, campaignKey) {
+async function sendTemplateForRowWithRetry(job, runtime, row, campaignKey, rowIndex) {
   try {
     return await sendTemplateForRow(job, runtime, row, campaignKey);
   } catch (err) {
     const code = extractWhatsAppErrorCode(err.message);
     if (PERMANENT_WA_ERRORS.has(code)) {
-      recordFailure(job, row, code, err.message, false);
+      recordFailure(job, row, code, err.message, false, { kind: 'send', rowIndex });
       await logJob(job, `Permanent WhatsApp error ${code}: ${row.name || row.phone_number}`, 'error');
       return { status: 'error' };
     }
     if (!RETRYABLE_WA_ERRORS.has(code)) {
-      recordFailure(job, row, code, err.message, false);
+      recordFailure(job, row, code, err.message, false, { kind: 'send', rowIndex });
       return { status: 'error' };
     }
     await logJob(job, `Retryable WhatsApp error ${code}; waiting 10s`, 'warn');
@@ -892,7 +958,7 @@ async function sendTemplateForRowWithRetry(job, runtime, row, campaignKey) {
       return await sendTemplateForRow(job, runtime, row, campaignKey);
     } catch (retryErr) {
       const retryCode = extractWhatsAppErrorCode(retryErr.message) || code;
-      recordFailure(job, row, retryCode, retryErr.message, true);
+      recordFailure(job, row, retryCode, retryErr.message, true, { kind: 'send', rowIndex });
       return { status: 'error' };
     }
   }
@@ -900,7 +966,7 @@ async function sendTemplateForRowWithRetry(job, runtime, row, campaignKey) {
 
 export async function sendTemplateForRow(job, runtime, row, campaignKey) {
   const { config, settings } = runtime;
-  const result = await upsertContact(job, runtime, row, settings.attrCol);
+  const result = await upsertContact(job, runtime, row, settings.attrCol, { resolveInboxSource: true });
   if (!result) throw new Error('Contact was not found/created');
   await assignLabel(job, config, result.id, settings.labelName, row.name || row.phone_number, result.isNew, result.existingLabels);
 
@@ -1026,15 +1092,9 @@ async function ensureCampaignConversation(job, runtime, contactId, row, marker) 
 
 async function ensureContactInbox(job, runtime, contactId, row) {
   const { config, settings } = runtime;
+  const sourceId = validatedSourceId(row, settings);
   let details = await getContactDetails(job, config, contactId);
-  let sourceId = getInboxSourceId(details, settings.inboxId);
-  if (sourceId) return sourceId;
-
-  sourceId = buildSourceId(row, settings);
-  if (!sourceId) throw new Error('Cannot determine WhatsApp source_id');
-  if (!/^\d{1,15}$/.test(String(sourceId))) {
-    throw new Error(`Invalid WhatsApp source_id "${sourceId}". It must be digits only, 1-15 chars.`);
-  }
+  if (getInboxSourceId(details, settings.inboxId, sourceId)) return sourceId;
 
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/contacts/${contactId}/contact_inboxes`, 'POST', {
     inbox_id: Number(settings.inboxId),
@@ -1043,8 +1103,7 @@ async function ensureContactInbox(job, runtime, contactId, row) {
   if (r.ok) return sourceId;
   if (r.status === 422) {
     details = await getContactDetails(job, config, contactId);
-    sourceId = getInboxSourceId(details, settings.inboxId);
-    if (sourceId) return sourceId;
+    if (getInboxSourceId(details, settings.inboxId, sourceId)) return sourceId;
   }
   throw new Error(`contact_inbox create failed: HTTP ${r.status} ${JSON.stringify(r.data)}`);
 }
@@ -1632,9 +1691,20 @@ function buildSourceId(row, settings) {
   return normPhone(raw);
 }
 
-function getInboxSourceId(contact, inboxId) {
+function validatedSourceId(row, settings) {
+  const sourceId = buildSourceId(row, settings);
+  if (!/^\d{1,15}$/.test(sourceId)) {
+    throw new Error(`Invalid WhatsApp source_id "${sourceId}". It must be digits only, 1-15 chars.`);
+  }
+  return sourceId;
+}
+
+function getInboxSourceId(contact, inboxId, wantedSourceId = '') {
   const inboxes = contact?.contact_inboxes || [];
-  const match = inboxes.find((item) => String(item.inbox?.id) === String(inboxId));
+  const match = inboxes.find((item) => (
+    String(item.inbox?.id) === String(inboxId)
+    && (!wantedSourceId || String(item.source_id) === String(wantedSourceId))
+  ));
   return match?.source_id || '';
 }
 
@@ -1670,7 +1740,7 @@ function extractHttpStatusCode(errorMsg) {
   return match ? `HTTP ${match[1]}` : '';
 }
 
-function recordFailure(job, row, code, rawMessage, retryAttempted) {
+function recordFailure(job, row, code, rawMessage, retryAttempted, metadata = {}) {
   job.failedRecords.push({
     phone: row.phone_number || '',
     name: row.name || '',
@@ -1679,7 +1749,37 @@ function recordFailure(job, row, code, rawMessage, retryAttempted) {
     timestamp: new Date().toISOString(),
     retry_attempted: retryAttempted ? 'yes' : 'no',
     raw_error: rawMessage || '',
+    ...metadata,
   });
+}
+
+export function selectFailedSendRows(job, rows) {
+  const used = new Set();
+  const selected = [];
+  for (const failure of job.failedRecords || []) {
+    if (failure.kind && failure.kind !== 'send') continue;
+    if (/^(?:async delivery failed|retry failed)\b/i.test(String(failure.raw_error || ''))) continue;
+    if (PERMANENT_WA_ERRORS.has(Number(failure.error_code))) continue;
+    const matchesRecord = (row) => (
+      normPhone(row.phone_number) === normPhone(failure.phone)
+      && String(row.name || '') === String(failure.name || '')
+    );
+    let index = Number.isInteger(failure.rowIndex) && matchesRecord(rows[failure.rowIndex] || {})
+      ? failure.rowIndex : -1;
+    if (index < 0) {
+      const matches = rows.map((row, i) => (!used.has(i) && matchesRecord(row) ? i : -1)).filter((i) => i >= 0);
+      if (matches.length !== 1) {
+        const err = new Error(`Cannot safely identify failed row for ${failure.phone || failure.name}: ${matches.length} matching saved rows. Download the failed CSV and retry this row manually.`);
+        err.status = 409;
+        throw err;
+      }
+      [index] = matches;
+    }
+    if (used.has(index)) continue;
+    used.add(index);
+    selected.push(rows[index]);
+  }
+  return selected;
 }
 
 function describeFailureCode(code) {
