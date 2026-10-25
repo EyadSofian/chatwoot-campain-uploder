@@ -374,8 +374,59 @@ test('send resolves the linked contact by source ID when phone search only retur
 
   assert.equal(result.status, 'sent');
   assert.equal(chatwoot.conversations.get(String(result.convId)).contact_id, linked.id);
-  assert.equal(chatwoot.requests.some((r) => r.method === 'GET' && r.path === '/contact_inboxes/filter'), true);
+  const filter = chatwoot.requests.find((r) => r.path === '/contact_inboxes/filter');
+  assert.equal(filter.method, 'POST');
+  assert.deepEqual(filter.body, { inbox_id: 27, source_id: '972598163043' });
+  assert.equal(filter.headers['Content-Type'], 'application/json');
+  assert.equal(filter.headers.api_access_token, 'test-token');
+  assert.equal(chatwoot.requests.filter((r) => r.path === '/contacts/search').length, 1);
   assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path === `/contacts/${duplicate.id}/contact_inboxes`), false);
+});
+
+test('send keeps the 422 filter error and makes no contact changes', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  chatwoot.addContact({ phone: '+972598163043' });
+  chatwoot.failOnce((r) => r.path === '/contact_inboxes/filter', 422);
+  await assert.rejects(
+    sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
+    /Could not verify WhatsApp source_id.*HTTP 422/
+  );
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path !== '/contact_inboxes/filter'), false);
+});
+
+test('a long Retry-After stops contact search retries before any contact write', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  chatwoot.failOnce((r) => r.path === '/contacts/search', 429, { 'Retry-After': '120' });
+  await assert.rejects(
+    sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
+    /Contact search failed.*HTTP 429/
+  );
+  assert.equal(chatwoot.requests.filter((r) => r.path === '/contacts/search').length, 1);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST'), false);
+});
+
+test('a long Retry-After stops filter retries before any contact write', async (t) => {
+  const chatwoot = createFakeChatwoot();
+  const originalFetch = global.fetch;
+  global.fetch = chatwoot.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+
+  chatwoot.addContact({ phone: '+972598163043' });
+  chatwoot.failOnce((r) => r.path === '/contact_inboxes/filter', 429, { 'Retry-After': '120' });
+  await assert.rejects(
+    sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
+    /Could not verify WhatsApp source_id.*HTTP 429/
+  );
+  assert.equal(chatwoot.requests.filter((r) => r.path === '/contact_inboxes/filter').length, 1);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path !== '/contact_inboxes/filter'), false);
 });
 
 test('send stops before writing when a WhatsApp source ID belongs to a contact with another phone', async (t) => {
@@ -390,7 +441,7 @@ test('send stops before writing when a WhatsApp source ID belongs to a contact w
     sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
     /belongs to a contact with a different phone/
   );
-  assert.equal(chatwoot.requests.some((r) => r.method === 'POST'), false);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path !== '/contact_inboxes/filter'), false);
 });
 
 test('send stops when a matched contact uses another WhatsApp source ID in the same inbox', async (t) => {
@@ -404,7 +455,7 @@ test('send stops when a matched contact uses another WhatsApp source ID in the s
     sendTemplateForRow(newJob(), runtimeFor({ inboxId: '27' }), { name: 'Customer', phone_number: '97259-816-3043' }, CAMPAIGN_KEY),
     /linked to Inbox #27 with a different WhatsApp source_id/
   );
-  assert.equal(chatwoot.requests.some((r) => r.method === 'POST'), false);
+  assert.equal(chatwoot.requests.some((r) => r.method === 'POST' && r.path !== '/contact_inboxes/filter'), false);
 });
 
 test('send creates a WhatsApp inbox link for a contact whose source ID is not used elsewhere', async (t) => {
@@ -421,6 +472,10 @@ test('send creates a WhatsApp inbox link for a contact whose source ID is not us
 
   assert.equal(result.status, 'sent');
   assert.equal(chatwoot.conversations.get(String(result.convId)).contact_id, contact.id);
+  assert.deepEqual(chatwoot.requests.find((r) => r.path === '/contact_inboxes/filter').body, {
+    inbox_id: 27,
+    source_id: '972598163043',
+  });
   assert.deepEqual(chatwoot.requests.find((r) => r.method === 'POST' && r.path === `/contacts/${contact.id}/contact_inboxes`).body, {
     inbox_id: 27,
     source_id: '972598163043',

@@ -45,6 +45,7 @@ const maxParallelSendQueues = clampInt(process.env.MAX_PARALLEL_SEND_QUEUES || p
 const maxParallelContactQueues = clampInt(process.env.MAX_PARALLEL_CONTACT_QUEUES || 1, 1, 3);
 const sendQueueLimiter = createLimiter(maxParallelSendQueues);
 const contactQueueLimiter = createLimiter(maxParallelContactQueues);
+const contactRowLimiter = createLimiter(clampInt(process.env.MAX_PARALLEL_CONTACT_ROWS || 3, 1, 5));
 let orphanedJobsRecovered = false;
 // id -> scheduledAt for jobs waiting on the clock. Rebuilt from disk on boot so
 // the scheduler tick never has to read every job file.
@@ -517,7 +518,7 @@ async function runUploadJob(job, runtime) {
     const totalBatches = Math.ceil(rows.length / batchSize);
     await logJob(job, `Batch ${batchNo}/${totalBatches}: ${batch.length} contacts`, 'info');
 
-    const results = await Promise.allSettled(batch.map((row) => processContact(job, runtime, row)));
+    const results = await Promise.allSettled(batch.map((row) => contactRowLimiter(() => processContact(job, runtime, row))));
     for (const [index, result] of results.entries()) {
       const row = batch[index] || {};
       const name = row.name || row.phone_number || `row ${i + index + 1}`;
@@ -740,7 +741,12 @@ async function cwFetch(job, config, pathName, method = 'GET', body, retries = 3)
       const text = await res.text();
       const data = text ? tryJson(text) : {};
       if (TRANSIENT_STATUS.has(res.status) && attempt < retries) {
-        const wait = retryDelay(attempt, res.status);
+        const serverWait = res.status === 429 ? retryAfterMs(res.headers.get('Retry-After')) : null;
+        if (serverWait !== null && serverWait > 60000) {
+          await logJob(job, `HTTP 429 on ${method} ${pathName}; Retry-After exceeds 60s, stopping retries`, 'warn');
+          return { ok: false, status: res.status, data };
+        }
+        const wait = Math.max(retryDelay(attempt, res.status), serverWait || 0);
         await logJob(job, `HTTP ${res.status} on ${method} ${pathName}; retry in ${wait}ms`, 'warn');
         await sleep(wait);
         continue;
@@ -767,6 +773,14 @@ function retryDelay(attempt, status) {
   const base = status === 429 ? 2500 : 1500;
   const jitter = Math.floor(Math.random() * 600);
   return base * (attempt + 1) + jitter;
+}
+
+function retryAfterMs(value, now = Date.now()) {
+  if (value == null || !String(value).trim()) return null;
+  const text = String(value).trim();
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  const date = Date.parse(text);
+  return Number.isNaN(date) ? null : Math.max(0, date - now);
 }
 
 async function ensureLabel(job, config, label) {
@@ -876,28 +890,20 @@ async function upsertContact(job, runtime, row, attrKey, { resolveInboxSource = 
 async function findContactByPhone(job, config, phone, inboxId = '', sourceId = '') {
   const norm = normPhone(phone);
   const r = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/contacts/search?q=${encodeURIComponent(norm)}&page=1`, 'GET');
-  if (r.ok) {
-    const contacts = r.data.payload || [];
-    const matches = contacts.filter((contact) => normPhone(contact.phone_number) === norm);
-    const match = matches.find((item) => getInboxSourceId(item, inboxId, sourceId)) || matches[0];
-    if (match) return match;
-  }
-  if (phone && phone !== norm) {
-    const r2 = await cwFetch(job, config, `/api/v1/accounts/${config.accountId}/contacts/search?q=${encodeURIComponent(phone)}&page=1`, 'GET');
-    if (r2.ok) {
-      const contacts = r2.data.payload || [];
-      const matches = contacts.filter((contact) => normPhone(contact.phone_number) === norm);
-      return matches.find((item) => getInboxSourceId(item, inboxId, sourceId)) || matches[0] || null;
-    }
-  }
-  return null;
+  if (!r.ok) throw new Error(`Contact search failed for ${phone}: HTTP ${r.status} ${JSON.stringify(r.data)}`);
+  const contacts = r.data.payload || [];
+  const matches = contacts.filter((contact) => normPhone(contact.phone_number) === norm);
+  return matches.find((item) => getInboxSourceId(item, inboxId, sourceId)) || matches[0] || null;
 }
 
 async function resolveContactForInbox(job, config, contact, phone, inboxId, sourceId) {
   if (getInboxSourceId(contact, inboxId, sourceId)) return contact;
 
-  const pathName = `/api/v1/accounts/${config.accountId}/contact_inboxes/filter?inbox_id=${encodeURIComponent(inboxId)}&source_id=${encodeURIComponent(sourceId)}`;
-  const r = await cwFetch(job, config, pathName, 'GET');
+  const pathName = `/api/v1/accounts/${config.accountId}/contact_inboxes/filter`;
+  const r = await cwFetch(job, config, pathName, 'POST', {
+    inbox_id: Number(inboxId),
+    source_id: sourceId,
+  });
   if (r.ok) {
     const linked = r.data?.payload || r.data;
     if (!linked?.id || normPhone(linked.phone_number) !== normPhone(phone)) {

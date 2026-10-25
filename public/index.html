@@ -1736,16 +1736,28 @@ async function cwFetch(path, method, body, retries = 2) {
       headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined
     });
+    const json = await res.json().catch(() => ({}));
     // Handle rate limit (429)
     if (res.status === 429 && attempt < retries) {
-      const wait = 2000 * (attempt + 1); // 2s, 4s
+      const serverWait = retryAfterMs(res.headers.get('Retry-After'));
+      if (serverWait !== null && serverWait > 60000) {
+        return { ok: false, status: res.status, data: json };
+      }
+      const wait = Math.max(2000 * (attempt + 1), serverWait || 0); // 2s, 4s minimum
       log(`  ⏳ Rate limit (429) — انتظار ${wait/1000}s ثم إعادة المحاولة`, 'warn');
       await new Promise(r => setTimeout(r, wait));
       continue;
     }
-    const json = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, data: json };
   }
+}
+
+function retryAfterMs(value, now = Date.now()) {
+  if (value == null || !String(value).trim()) return null;
+  const text = String(value).trim();
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  const date = Date.parse(text);
+  return Number.isNaN(date) ? null : Math.max(0, date - now);
 }
 
 async function serverCwFetch(path, method = 'GET', body, retries = 2) {
@@ -1910,26 +1922,10 @@ async function findContactByPhone(phone) {
   // (لأن "+966..." بيحتوي "966..."). ده بيوفّر نص الـ search calls.
   const s = await cwFetch(
     `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(norm)}&page=1`, 'GET');
-  if (s.ok) {
-    const contacts = s.data.payload || [];
-    // exact match فقط — مفيش first-result fallback
-    // ده بيمنع الـ false positives لما الـ search بيرجع contacts غير مطابقة
-    const match = contacts.find(c => normPhone(c.phone_number) === norm);
-    if (match) return match;
-  }
-
-  // Fallback: لو الصيغة المعيارية مالقتش حاجة وكان الرقم الأصلي مختلف،
-  // جرّب الرقم الأصلي (نادراً ما يحصل، بس للسلامة)
-  if (phone && phone !== norm) {
-    const s2 = await cwFetch(
-      `/api/v1/accounts/${acc}/contacts/search?q=${encodeURIComponent(phone)}&page=1`, 'GET');
-    if (s2.ok) {
-      const contacts = s2.data.payload || [];
-      const match = contacts.find(c => normPhone(c.phone_number) === norm);
-      if (match) return match;
-    }
-  }
-  return null;
+  if (!s.ok) throw new Error(`Contact search failed for ${phone}: HTTP ${s.status} ${JSON.stringify(s.data)}`);
+  const contacts = s.data.payload || [];
+  // Exact match only; a failed search must never be treated as "not found".
+  return contacts.find(c => normPhone(c.phone_number) === norm) || null;
 }
 
 async function applyCustomAttr(contactId, attrKey, attrVal, name, existing = null) {
