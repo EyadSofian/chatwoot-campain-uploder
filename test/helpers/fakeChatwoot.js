@@ -49,8 +49,8 @@ export function createFakeChatwoot({ accountId = '2', searchResultLimit = Infini
   }
 
   // The next matching request fails with `status` without touching state.
-  function failOnce(match, status) {
-    failures.push({ match, status });
+  function failOnce(match, status, headers = {}) {
+    failures.push({ match, status, headers });
   }
 
   function attributes(conversationId) {
@@ -73,18 +73,19 @@ export function createFakeChatwoot({ accountId = '2', searchResultLimit = Infini
     const prefix = `/api/v1/accounts/${accountId}`;
     const path = parsed.pathname.startsWith(prefix) ? parsed.pathname.slice(prefix.length) : parsed.pathname;
     const body = options.body ? JSON.parse(options.body) : null;
-    const request = { method, path, body };
+    const request = { method, path, body, headers: options.headers || {} };
     requests.push(request);
 
     const failure = failures.findIndex(({ match }) => match(request));
-    const response = failure >= 0
-      ? { status: failures.splice(failure, 1)[0].status, body: { error: 'simulated failure' } }
+    const failed = failure >= 0 ? failures.splice(failure, 1)[0] : null;
+    const response = failed
+      ? { status: failed.status, headers: failed.headers, body: { error: 'simulated failure' } }
       : route(method, path, parsed, body);
     request.response = clone(response.body ?? {});
     for (const { match, hook } of hooks) {
       if (match(request)) await hook(request, api);
     }
-    return new Response(JSON.stringify(response.body ?? {}), { status: response.status ?? 200 });
+    return new Response(JSON.stringify(response.body ?? {}), { status: response.status ?? 200, headers: response.headers });
   }
 
   function route(method, path, parsed, body) {
@@ -103,11 +104,11 @@ export function createFakeChatwoot({ accountId = '2', searchResultLimit = Infini
         .slice(0, searchResultLimit);
       return { body: { payload: clone(payload) } };
     }
-    if (method === 'GET' && path === '/contact_inboxes/filter') {
-      const inboxId = parsed.searchParams.get('inbox_id');
-      const sourceId = parsed.searchParams.get('source_id');
+    if (method === 'POST' && path === '/contact_inboxes/filter') {
+      const inboxId = body.inbox_id;
+      const sourceId = body.source_id;
       const contact = [...contacts.values()].find((c) => c.contact_inboxes.some((ci) => (
-        String(ci.inbox.id) === inboxId && String(ci.source_id) === sourceId
+        String(ci.inbox.id) === String(inboxId) && String(ci.source_id) === String(sourceId)
       )));
       return contact ? { body: clone(contact) } : { status: 404, body: {} };
     }
