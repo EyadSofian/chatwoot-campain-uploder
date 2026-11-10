@@ -4,6 +4,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { registerJobRoutes } from './jobs.js';
+import { registerBroadcastReporting } from './broadcastReporting.js';
 import { registerReplyRouter } from './replyRouter.js';
 import { startCmrpReplyReconciler } from './cmrpReconcile.js';
 
@@ -24,6 +25,7 @@ app.use((req, res, next) => {
 
 app.use('/api/jobs', express.json({ limit: '25mb' }));
 registerJobRoutes(app);
+registerBroadcastReporting(app);
 
 app.use('/api/webhooks', express.json({ limit: '2mb' }));
 registerReplyRouter(app);
